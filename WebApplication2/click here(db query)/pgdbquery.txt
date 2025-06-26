@@ -1,0 +1,33 @@
+CREATE TABLE login (
+    id SERIAL PRIMARY KEY,
+    username VARCHAR(50),
+    password VARCHAR(100)
+);
+
+
+
+CREATE TABLE staff_data2 (
+    id SERIAL PRIMARY KEY,
+    staff_id VARCHAR(50),
+    name VARCHAR(100),
+    subject1 VARCHAR(100),
+    subject2 VARCHAR(100),
+    subject3 VARCHAR(100),
+    block VARCHAR(50),
+    department VARCHAR(100),
+    department_id VARCHAR(50)
+);
+
+CREATE TABLE subject_data2 (
+    sub_code TEXT,
+    subject_name TEXT,
+    year TEXT,
+    sem TEXT,
+    department TEXT,
+    department_id TEXT,
+    subject_type TEXT
+);
+
+INSERT INTO login (username, password) VALUES
+('cse', 'cse123'),
+('admin', 'admin@123');
