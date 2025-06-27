@@ -14,6 +14,7 @@ builder.Services.AddCors(options =>
     {
         policy.WithOrigins("http://localhost:5173")  // ONLY allow Vite dev frontend
               .AllowAnyHeader()
+              .AllowAnyOrigin()
               .AllowAnyMethod();
     });
 });
