@@ -78,10 +78,10 @@ namespace YourNamespace.Controllers
 
         [HttpGet("generateCrossDepartmentTimetable")]
         public async Task<IActionResult> GenerateCrossDepartmentTimetable(
-      [FromQuery] string toDepartment,
-      [FromQuery] string year,
-      [FromQuery] string semester,
-      [FromQuery] string section)
+   [FromQuery] string toDepartment,
+   [FromQuery] string year,
+   [FromQuery] string semester,
+   [FromQuery] string section)
         {
             var connectionString = _configuration.GetConnectionString("DefaultConnection");
 
@@ -95,13 +95,13 @@ namespace YourNamespace.Controllers
 
                 // Step 1: Load Subject Assignments
                 var query = @"
-            SELECT * FROM subject_assignments
-            WHERE LOWER(department) = LOWER(@toDepartment)
-              AND LOWER(year) = LOWER(@year)
-              AND LOWER(semester) = LOWER(@semester)
-              AND LOWER(section) = LOWER(@section)
-              AND staff_assigned IS NOT NULL AND TRIM(staff_assigned) <> ''
-        ";
+       SELECT * FROM subject_assignments
+       WHERE LOWER(department) = LOWER(@toDepartment)
+         AND LOWER(year) = LOWER(@year)
+         AND LOWER(semester) = LOWER(@semester)
+         AND LOWER(section) = LOWER(@section)
+         AND staff_assigned IS NOT NULL AND TRIM(staff_assigned) <> ''
+   ";
 
                 using var cmd = new NpgsqlCommand(query, conn);
                 cmd.Parameters.AddWithValue("@toDepartment", toDepartment.Trim());
@@ -177,10 +177,10 @@ namespace YourNamespace.Controllers
 
                         // Save into cross_class_timetable
                         var insertCmd = new NpgsqlCommand(@"
-                    INSERT INTO cross_class_timetable 
-                    (from_department, to_department, year, semester, section, day, hour, subject_code, staff_assigned)
-                    VALUES (@from_department, @to_department, @year, @semester, @section, @day, @hour, @subject_code, @staff_assigned);
-                ", conn);
+               INSERT INTO cross_class_timetable 
+               (from_department, to_department, year, semester, section, day, hour, subject_code, staff_assigned)
+               VALUES (@from_department, @to_department, @year, @semester, @section, @day, @hour, @subject_code, @staff_assigned);
+           ", conn);
 
                         insertCmd.Parameters.AddWithValue("@from_department", toDepartment);
                         insertCmd.Parameters.AddWithValue("@to_department", toDepartment);
@@ -196,11 +196,11 @@ namespace YourNamespace.Controllers
 
                         // Save into staff_timetable
                         var staffInsertCmd = new NpgsqlCommand(@"
-                    INSERT INTO staff_timetable
-                    (staff_name, department, year, semester, section, day, hour, subject_code, subject_name)
-                    VALUES
-                    (@staff_name, @department, @year, @semester, @section, @day, @hour, @subject_code, @subject_name);
-                ", conn);
+               INSERT INTO staff_timetable
+               (staff_name, department, year, semester, section, day, hour, subject_code, subject_name)
+               VALUES
+               (@staff_name, @department, @year, @semester, @section, @day, @hour, @subject_code, @subject_name);
+           ", conn);
 
                         staffInsertCmd.Parameters.AddWithValue("@staff_name", staff);
                         staffInsertCmd.Parameters.AddWithValue("@department", toDepartment);
@@ -223,7 +223,7 @@ namespace YourNamespace.Controllers
                 {
                     message = conflicts.Count == 0
                         ? "✅ Timetable generated and stored successfully."
-                        : "⚠️ Timetable generated with some conflicts. Stored valid entries.",
+                        : "⚠ Timetable generated with some conflicts. Stored valid entries.",
                     timetable,
                     conflicts = conflicts.Select(c => new
                     {
@@ -242,9 +242,6 @@ namespace YourNamespace.Controllers
                 });
             }
         }
-
-
-
 
         [HttpGet("getCrossTimetable")]
         public async Task<IActionResult> GetCrossTimetable(
