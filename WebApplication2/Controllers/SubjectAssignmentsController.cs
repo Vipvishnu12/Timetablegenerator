@@ -371,6 +371,158 @@ namespace YourNamespace.Controllers
             }
         }
 
+
+
+
+        [HttpPost("generateCrossDepartmentTimetable")]
+        public async Task<IActionResult> GenerateCrossDepartmentTimetable([FromBody] TimetableRequest request)
+        {
+            var connectionString = _configuration.GetConnectionString("DefaultConnection");
+
+            try
+            {
+                var subjects = new List<TimetableEngine.Subject>();
+                var globalStaffAvailability = new Dictionary<string, Dictionary<string, HashSet<int>>>();
+
+                // Load subjects directly from request
+                foreach (var sub in request.Subjects)
+                {
+                    if (string.IsNullOrWhiteSpace(sub.StaffAssigned)) continue;
+
+                    subjects.Add(new TimetableEngine.Subject
+                    {
+                        SubjectCode = sub.SubjectCode ?? "---",
+                        SubjectName = sub.SubjectName ?? "---",
+                        SubjectType = sub.SubjectType ?? "Theory",
+                        Credit = sub.Credit,
+                        StaffAssigned = sub.StaffAssigned
+                    });
+                }
+
+                if (subjects.Count == 0)
+                {
+                    return BadRequest(new
+                    {
+                        message = "❌ No valid subjects found. Ensure all have assigned staff.",
+                        debug = request
+                    });
+                }
+
+                using var conn = new NpgsqlConnection(connectionString);
+                await conn.OpenAsync();
+
+                // Step 2: Load Staff Availability from existing timetable
+                var availabilityQuery = "SELECT staff_assigned, day, hour FROM cross_class_timetable";
+                using var existingCmd = new NpgsqlCommand(availabilityQuery, conn);
+                using var availabilityReader = await existingCmd.ExecuteReaderAsync();
+
+                while (await availabilityReader.ReadAsync())
+                {
+                    var staff = availabilityReader["staff_assigned"].ToString();
+                    var day = availabilityReader["day"].ToString();
+                    var hour = Convert.ToInt32(availabilityReader["hour"]);
+
+                    if (!globalStaffAvailability.ContainsKey(staff))
+                    {
+                        globalStaffAvailability[staff] = new Dictionary<string, HashSet<int>>();
+                        foreach (var d in new[] { "Mon", "Tue", "Wed", "Thu", "Fri" })
+                            globalStaffAvailability[staff][d] = new HashSet<int>();
+                    }
+
+                    if (!globalStaffAvailability[staff].ContainsKey(day))
+                        globalStaffAvailability[staff][day] = new HashSet<int>();
+
+                    globalStaffAvailability[staff][day].Add(hour);
+                }
+                availabilityReader.Close();
+
+                // Step 3: Generate Timetable
+                var engine = new TimetableEngine();
+                var (timetable, conflicts) = engine.Generate(subjects, globalStaffAvailability);
+
+                // Step 4: Save into cross_class_timetable and staff_timetable
+                foreach (var daySlot in timetable)
+                {
+                    foreach (var kv in daySlot.HourlySlots)
+                    {
+                        string value = kv.Value;
+                        if (value == "---") continue;
+
+                        var hour = kv.Key;
+                        var parts = value.Split("(", StringSplitOptions.TrimEntries);
+                        string subjectCode = parts[0].Trim();
+                        string staff = parts.Length > 1 ? parts[1].Replace(")", "").Trim() : "---";
+
+                        // Save into cross_class_timetable
+                        var insertCmd = new NpgsqlCommand(@"
+                    INSERT INTO cross_class_timetable 
+                    (from_department, to_department, year, semester, section, day, hour, subject_code, staff_assigned)
+                    VALUES (@from_department, @to_department, @year, @semester, @section, @day, @hour, @subject_code, @staff_assigned);
+                ", conn);
+
+                        insertCmd.Parameters.AddWithValue("@from_department", request.Department);
+                        insertCmd.Parameters.AddWithValue("@to_department", request.Department);
+                        insertCmd.Parameters.AddWithValue("@year", request.Year);
+                        insertCmd.Parameters.AddWithValue("@semester", request.Semester);
+                        insertCmd.Parameters.AddWithValue("@section", request.Section);
+                        insertCmd.Parameters.AddWithValue("@day", daySlot.Day);
+                        insertCmd.Parameters.AddWithValue("@hour", hour);
+                        insertCmd.Parameters.AddWithValue("@subject_code", subjectCode);
+                        insertCmd.Parameters.AddWithValue("@staff_assigned", staff);
+
+                        await insertCmd.ExecuteNonQueryAsync();
+
+                        // Save into staff_timetable
+                        var staffInsertCmd = new NpgsqlCommand(@"
+                    INSERT INTO staff_timetable
+                    (staff_name, department, year, semester, section, day, hour, subject_code, subject_name)
+                    VALUES
+                    (@staff_name, @department, @year, @semester, @section, @day, @hour, @subject_code, @subject_name);
+                ", conn);
+
+                        staffInsertCmd.Parameters.AddWithValue("@staff_name", staff);
+                        staffInsertCmd.Parameters.AddWithValue("@department", request.Department);
+                        staffInsertCmd.Parameters.AddWithValue("@year", request.Year);
+                        staffInsertCmd.Parameters.AddWithValue("@semester", request.Semester);
+                        staffInsertCmd.Parameters.AddWithValue("@section", request.Section);
+                        staffInsertCmd.Parameters.AddWithValue("@day", daySlot.Day);
+                        staffInsertCmd.Parameters.AddWithValue("@hour", hour);
+                        staffInsertCmd.Parameters.AddWithValue("@subject_code", subjectCode);
+
+                        var matchedSubject = subjects.FirstOrDefault(s => s.SubjectCode == subjectCode);
+                        staffInsertCmd.Parameters.AddWithValue("@subject_name", matchedSubject?.SubjectName ?? "---");
+
+                        await staffInsertCmd.ExecuteNonQueryAsync();
+                    }
+                }
+
+                return Ok(new
+                {
+                    message = conflicts.Count == 0
+                        ? "✅ Timetable generated and stored successfully."
+                        : "⚠ Timetable generated with some conflicts. Stored valid entries.",
+                    timetable,
+                    conflicts = conflicts.Select(c => new
+                    {
+                        subject = c.Subject.SubjectCode,
+                        staff = c.Subject.StaffAssigned,
+                        reason = c.Reason
+                    })
+                });
+            }
+            catch (Exception ex)
+            {
+                return StatusCode(500, new
+                {
+                    message = "❌ Internal Server Error while generating timetable.",
+                    error = ex.Message
+                });
+            }
+        }
+
+
+
+
         [HttpGet("store")]
         public IActionResult StoreAssignment(
            string subCode,
@@ -416,4 +568,27 @@ namespace YourNamespace.Controllers
             }
         }
     }
+
+
+    public class TimetableRequest
+    {
+        public string Department { get; set; }
+        public string Year { get; set; }
+        public string Semester { get; set; }
+        public string Section { get; set; }
+
+        public List<SubjectInput> Subjects { get; set; }
+
+        public class SubjectInput
+        {
+            public string SubjectCode { get; set; }
+            public string SubjectName { get; set; }
+            public string SubjectType { get; set; }
+            public int Credit { get; set; }
+            public string StaffAssigned { get; set; }
+        }
+    }
+
+
+
 }
