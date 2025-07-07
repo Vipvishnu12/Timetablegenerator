@@ -1,6 +1,7 @@
 ﻿using Microsoft.AspNetCore.Mvc;
 using Npgsql;
 using Microsoft.Extensions.Configuration;
+using System.Collections.Generic;
 
 namespace YourNamespace.Controllers
 {
@@ -27,10 +28,10 @@ namespace YourNamespace.Controllers
                 conn.Open();
 
                 var query = @"
-            SELECT department_name 
-            FROM admin 
-            WHERE department_id = @username AND password = @password
-        ";
+                    SELECT department_name 
+                    FROM admin 
+                    WHERE department_id = @username AND password = @password
+                ";
 
                 using var cmd = new NpgsqlCommand(query, conn);
                 cmd.Parameters.AddWithValue("@username", dto.Username.ToUpper());
@@ -99,6 +100,35 @@ namespace YourNamespace.Controllers
             catch (Exception ex)
             {
                 return StatusCode(500, new { message = "Server error", error = ex.Message });
+            }
+        }
+
+        // ✅ Get all department IDs from admin table
+        [HttpGet("departments")]
+        public IActionResult GetAllDepartments()
+        {
+            try
+            {
+                var connectionString = _configuration.GetConnectionString("DefaultConnection");
+                using var conn = new NpgsqlConnection(connectionString);
+                conn.Open();
+
+                var query = "SELECT department_id FROM admin WHERE department_id != 'ADMIN' ORDER BY department_id";
+
+                using var cmd = new NpgsqlCommand(query, conn);
+                using var reader = cmd.ExecuteReader();
+
+                var departments = new List<string>();
+                while (reader.Read())
+                {
+                    departments.Add(reader.GetString(0));
+                }
+
+                return Ok(departments);
+            }
+            catch (Exception ex)
+            {
+                return StatusCode(500, new { message = "Failed to load departments", error = ex.Message });
             }
         }
     }

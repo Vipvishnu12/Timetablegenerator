@@ -6,6 +6,7 @@ using System.Collections.Generic;
 using System.Linq;
 using System.Threading.Tasks;
 using TimetableGA;
+using static TimetableGA.TimetableEngine;
 
 namespace YourNamespace.Controllers
 {
@@ -78,10 +79,10 @@ namespace YourNamespace.Controllers
 
         [HttpGet("generateCrossDepartmentTimetable")]
         public async Task<IActionResult> GenerateCrossDepartmentTimetable(
-   [FromQuery] string toDepartment,
-   [FromQuery] string year,
-   [FromQuery] string semester,
-   [FromQuery] string section)
+     [FromQuery] string toDepartment,
+     [FromQuery] string year,
+     [FromQuery] string semester,
+     [FromQuery] string section)
         {
             var connectionString = _configuration.GetConnectionString("DefaultConnection");
 
@@ -95,13 +96,13 @@ namespace YourNamespace.Controllers
 
                 // Step 1: Load Subject Assignments
                 var query = @"
-       SELECT * FROM subject_assignments
-       WHERE LOWER(department) = LOWER(@toDepartment)
-         AND LOWER(year) = LOWER(@year)
-         AND LOWER(semester) = LOWER(@semester)
-         AND LOWER(section) = LOWER(@section)
-         AND staff_assigned IS NOT NULL AND TRIM(staff_assigned) <> ''
-   ";
+            SELECT * FROM subject_assignments
+            WHERE LOWER(department) = LOWER(@toDepartment)
+              AND LOWER(year) = LOWER(@year)
+              AND LOWER(semester) = LOWER(@semester)
+              AND LOWER(section) = LOWER(@section)
+              AND staff_assigned IS NOT NULL AND TRIM(staff_assigned) <> ''
+        ";
 
                 using var cmd = new NpgsqlCommand(query, conn);
                 cmd.Parameters.AddWithValue("@toDepartment", toDepartment.Trim());
@@ -132,7 +133,7 @@ namespace YourNamespace.Controllers
                     });
                 }
 
-                // Step 2: Load Staff Availability from Existing Timetable
+                // Step 2: Load Staff Availability
                 var availabilityQuery = "SELECT staff_assigned, day, hour FROM cross_class_timetable";
                 using var existingCmd = new NpgsqlCommand(availabilityQuery, conn);
                 using var availabilityReader = await existingCmd.ExecuteReaderAsync();
@@ -142,7 +143,6 @@ namespace YourNamespace.Controllers
                     var day = availabilityReader["day"].ToString();
                     var hour = Convert.ToInt32(availabilityReader["hour"]);
 
-                    // Initialize dictionary for staff
                     if (!globalStaffAvailability.ContainsKey(staff))
                     {
                         globalStaffAvailability[staff] = new Dictionary<string, HashSet<int>>();
@@ -150,7 +150,6 @@ namespace YourNamespace.Controllers
                             globalStaffAvailability[staff][d] = new HashSet<int>();
                     }
 
-                    // Add available hour
                     if (!globalStaffAvailability[staff].ContainsKey(day))
                         globalStaffAvailability[staff][day] = new HashSet<int>();
 
@@ -162,7 +161,7 @@ namespace YourNamespace.Controllers
                 var engine = new TimetableEngine();
                 var (timetable, conflicts) = engine.Generate(subjects, globalStaffAvailability);
 
-                // Step 4: Save into cross_class_timetable and staff_timetable
+                // Step 4: Insert into cross_class_timetable and staff_timetable
                 foreach (var daySlot in timetable)
                 {
                     foreach (var kv in daySlot.HourlySlots)
@@ -173,14 +172,14 @@ namespace YourNamespace.Controllers
                         var hour = kv.Key;
                         var parts = value.Split("(", StringSplitOptions.TrimEntries);
                         string subjectCode = parts[0].Trim();
-                        string staff = parts.Length > 1 ? parts[1].Replace(")", "").Trim() : "---";
+                        string rawStaffId = parts.Length > 1 ? parts[1].Replace(")", "").Trim() : "---";
 
-                        // Save into cross_class_timetable
+                        // Insert into cross_class_timetable
                         var insertCmd = new NpgsqlCommand(@"
-               INSERT INTO cross_class_timetable 
-               (from_department, to_department, year, semester, section, day, hour, subject_code, staff_assigned)
-               VALUES (@from_department, @to_department, @year, @semester, @section, @day, @hour, @subject_code, @staff_assigned);
-           ", conn);
+                    INSERT INTO cross_class_timetable 
+                    (from_department, to_department, year, semester, section, day, hour, subject_code, staff_assigned)
+                    VALUES (@from_department, @to_department, @year, @semester, @section, @day, @hour, @subject_code, @staff_assigned);
+                ", conn);
 
                         insertCmd.Parameters.AddWithValue("@from_department", toDepartment);
                         insertCmd.Parameters.AddWithValue("@to_department", toDepartment);
@@ -190,19 +189,29 @@ namespace YourNamespace.Controllers
                         insertCmd.Parameters.AddWithValue("@day", daySlot.Day);
                         insertCmd.Parameters.AddWithValue("@hour", hour);
                         insertCmd.Parameters.AddWithValue("@subject_code", subjectCode);
-                        insertCmd.Parameters.AddWithValue("@staff_assigned", staff);
-
+                        insertCmd.Parameters.AddWithValue("@staff_assigned", rawStaffId);
                         await insertCmd.ExecuteNonQueryAsync();
 
-                        // Save into staff_timetable
-                        var staffInsertCmd = new NpgsqlCommand(@"
-               INSERT INTO staff_timetable
-               (staff_name, department, year, semester, section, day, hour, subject_code, subject_name)
-               VALUES
-               (@staff_name, @department, @year, @semester, @section, @day, @hour, @subject_code, @subject_name);
-           ", conn);
+                        var matchedSubject = subjects.FirstOrDefault(s => s.SubjectCode == subjectCode);
+                        string fullStaff = matchedSubject?.StaffAssigned ?? "---";
 
-                        staffInsertCmd.Parameters.AddWithValue("@staff_name", staff);
+                        string staffName = "---", staffId = "---";
+                        if (fullStaff.Contains("("))
+                        {
+                            var nameIdParts = fullStaff.Split("(", StringSplitOptions.TrimEntries);
+                            staffName = nameIdParts[0].Trim();
+                            staffId = nameIdParts[1].Replace(")", "").Trim();
+                        }
+
+                        var staffInsertCmd = new NpgsqlCommand(@"
+                    INSERT INTO staff_timetable
+                    (staff_name, department, year, semester, section, day, hour, subject_code, subject_name, staff_id)
+                    VALUES
+                    (@staff_name, @department, @year, @semester, @section, @day, @hour, @subject_code, @subject_name, @staff_id);
+                ", conn);
+
+                        staffInsertCmd.Parameters.AddWithValue("@staff_name", staffName);
+                        staffInsertCmd.Parameters.AddWithValue("@staff_id", staffId);
                         staffInsertCmd.Parameters.AddWithValue("@department", toDepartment);
                         staffInsertCmd.Parameters.AddWithValue("@year", year);
                         staffInsertCmd.Parameters.AddWithValue("@semester", semester);
@@ -210,15 +219,46 @@ namespace YourNamespace.Controllers
                         staffInsertCmd.Parameters.AddWithValue("@day", daySlot.Day);
                         staffInsertCmd.Parameters.AddWithValue("@hour", hour);
                         staffInsertCmd.Parameters.AddWithValue("@subject_code", subjectCode);
-
-                        var matchedSubject = subjects.FirstOrDefault(s => s.SubjectCode == subjectCode);
                         staffInsertCmd.Parameters.AddWithValue("@subject_name", matchedSubject?.SubjectName ?? "---");
 
                         await staffInsertCmd.ExecuteNonQueryAsync();
                     }
                 }
 
-                // Final response
+                // Step 5: Delete from source tables
+                foreach (var subject in subjects)
+                {
+                    var deleteSubjectCmd = new NpgsqlCommand(@"
+                DELETE FROM subject_assignments
+                WHERE LOWER(sub_code) = LOWER(@code)
+                  AND LOWER(department) = LOWER(@dept)
+                  AND LOWER(year) = LOWER(@year)
+                  AND LOWER(semester) = LOWER(@sem)
+                  AND LOWER(section) = LOWER(@sec)
+            ", conn);
+                    deleteSubjectCmd.Parameters.AddWithValue("@code", subject.SubjectCode);
+                    deleteSubjectCmd.Parameters.AddWithValue("@dept", toDepartment);
+                    deleteSubjectCmd.Parameters.AddWithValue("@year", year);
+                    deleteSubjectCmd.Parameters.AddWithValue("@sem", semester);
+                    deleteSubjectCmd.Parameters.AddWithValue("@sec", section);
+                    await deleteSubjectCmd.ExecuteNonQueryAsync();
+
+                    var deleteCrossCmd = new NpgsqlCommand(@"
+                DELETE FROM cross_department_assignments
+                WHERE LOWER(subject_code) = LOWER(@code)
+                  AND LOWER(to_department) = LOWER(@dept)
+                  AND LOWER(year) = LOWER(@year)
+                  AND LOWER(semester) = LOWER(@sem)
+                  AND LOWER(section) = LOWER(@sec)
+            ", conn);
+                    deleteCrossCmd.Parameters.AddWithValue("@code", subject.SubjectCode);
+                    deleteCrossCmd.Parameters.AddWithValue("@dept", toDepartment);
+                    deleteCrossCmd.Parameters.AddWithValue("@year", year);
+                    deleteCrossCmd.Parameters.AddWithValue("@sem", semester);
+                    deleteCrossCmd.Parameters.AddWithValue("@sec", section);
+                    await deleteCrossCmd.ExecuteNonQueryAsync();
+                }
+
                 return Ok(new
                 {
                     message = conflicts.Count == 0
@@ -243,30 +283,36 @@ namespace YourNamespace.Controllers
             }
         }
 
+        // ✅ UPDATED BACKEND CONTROLLER METHOD
         [HttpGet("getCrossTimetable")]
         public async Task<IActionResult> GetCrossTimetable(
-            [FromQuery] string toDepartment,
-            [FromQuery] string year,
-            [FromQuery] string semester,
-            [FromQuery] string section)
+       [FromQuery] string toDepartment,
+       [FromQuery] string year,
+       [FromQuery] string semester,
+       [FromQuery] string section)
         {
             var connectionString = _configuration.GetConnectionString("DefaultConnection");
 
             try
             {
-                var result = new Dictionary<string, Dictionary<int, string>>();
+                var result = new Dictionary<string, Dictionary<int, (string Display, string SubjectId)>>();
 
                 using var conn = new NpgsqlConnection(connectionString);
                 await conn.OpenAsync();
 
-                // ✅ Do NOT use LOWER() here since actual values are case-sensitive
                 var query = @"
-            SELECT day, hour, subject_code, staff_assigned
-            FROM cross_class_timetable
-            WHERE to_department = @toDepartment
-              AND year = @year
-              AND semester = @semester
-              AND section = @section
+            SELECT 
+                cct.day, 
+                cct.hour, 
+                cct.subject_code, 
+                cct.staff_assigned, 
+                sd.subject_id
+            FROM cross_class_timetable cct
+            LEFT JOIN subject_data2 sd ON cct.subject_code = sd.sub_code
+            WHERE cct.to_department = @toDepartment
+              AND cct.year = @year
+              AND cct.semester = @semester
+              AND cct.section = @section
         ";
 
                 using var cmd = new NpgsqlCommand(query, conn);
@@ -275,24 +321,24 @@ namespace YourNamespace.Controllers
                 cmd.Parameters.AddWithValue("@semester", semester.Trim());
                 cmd.Parameters.AddWithValue("@section", section.Trim());
 
-                // 🔍 Log input to debug any issues
-                Console.WriteLine($"📥 Dept: {toDepartment} | Year: {year} | Sem: {semester} | Sec: {section}");
-
                 using var reader = await cmd.ExecuteReaderAsync();
                 while (await reader.ReadAsync())
                 {
                     var day = reader["day"].ToString();
                     var hour = Convert.ToInt32(reader["hour"]);
-                    var subject = reader["subject_code"].ToString();
+                    var subjectCode = reader["subject_code"].ToString();
                     var staff = reader["staff_assigned"].ToString();
+                    var subjectId = reader["subject_id"]?.ToString() ?? "0"; // VARCHAR support
+
+                    var display = $"{subjectCode} ({staff})";
 
                     if (!result.ContainsKey(day))
-                        result[day] = new Dictionary<int, string>();
+                        result[day] = new Dictionary<int, (string, string)>();
 
-                    result[day][hour] = $"{subject} ({staff})";
+                    result[day][hour] = (display, subjectId);
                 }
 
-                // 🧱 Build full 5-day/7-hour table even with missing entries
+                // Fill all 5 weekdays and 7 hours
                 var days = new[] { "Mon", "Tue", "Wed", "Thu", "Fri" };
                 var periods = Enumerable.Range(1, 7).ToList();
 
@@ -301,7 +347,9 @@ namespace YourNamespace.Controllers
                     Day = day,
                     HourlySlots = periods.ToDictionary(
                         p => p,
-                        p => result.ContainsKey(day) && result[day].ContainsKey(p) ? result[day][p] : "---"
+                        p => result.ContainsKey(day) && result[day].ContainsKey(p)
+                            ? new { display = result[day][p].Display, subjectId = result[day][p].SubjectId }
+                            : new { display = "---", subjectId = "0" }
                     )
                 }).ToList();
 
@@ -317,6 +365,7 @@ namespace YourNamespace.Controllers
             }
         }
 
+
         [HttpGet("grouped1")]
         public async Task<IActionResult> GetAssignmentsForReceivingDepartment()
         {
@@ -329,20 +378,25 @@ namespace YourNamespace.Controllers
                 await conn.OpenAsync();
 
                 var sql = @"
-                    SELECT 
-                        id,
-                        from_department,
-                        to_department,
-                        subject_code,
-                        subject_name,
-                        year,
-                        semester,
-                        section,
-                        assigned_at,
-                        assigned_staff
-                    FROM cross_department_assignments
-                    ORDER BY year, semester, section, to_department
-                ";
+                SELECT 
+    id,
+    from_department,
+    to_department,
+    subject_code,
+    subject_name,
+    year,
+    semester,
+    section,
+    assigned_at,
+    assigned_staff
+FROM cross_department_assignments
+WHERE assigned_staff IS NULL OR TRIM(assigned_staff) = ''
+ORDER BY 
+    year,
+    semester,
+    section,
+    to_department
+";
 
                 using var cmd = new NpgsqlCommand(sql, conn);
                 using var reader = await cmd.ExecuteReaderAsync();
@@ -451,9 +505,9 @@ namespace YourNamespace.Controllers
                         var hour = kv.Key;
                         var parts = value.Split("(", StringSplitOptions.TrimEntries);
                         string subjectCode = parts[0].Trim();
-                        string staff = parts.Length > 1 ? parts[1].Replace(")", "").Trim() : "---";
+                        string rawStaffId = parts.Length > 1 ? parts[1].Replace(")", "").Trim() : "---";
 
-                        // Save into cross_class_timetable
+                        // Save to cross_class_timetable
                         var insertCmd = new NpgsqlCommand(@"
                     INSERT INTO cross_class_timetable 
                     (from_department, to_department, year, semester, section, day, hour, subject_code, staff_assigned)
@@ -468,19 +522,31 @@ namespace YourNamespace.Controllers
                         insertCmd.Parameters.AddWithValue("@day", daySlot.Day);
                         insertCmd.Parameters.AddWithValue("@hour", hour);
                         insertCmd.Parameters.AddWithValue("@subject_code", subjectCode);
-                        insertCmd.Parameters.AddWithValue("@staff_assigned", staff);
+                        insertCmd.Parameters.AddWithValue("@staff_assigned", rawStaffId);
 
                         await insertCmd.ExecuteNonQueryAsync();
 
-                        // Save into staff_timetable
+                        // Now insert into staff_timetable (with staff_id + name)
+                        var matchedSubject = subjects.FirstOrDefault(s => s.SubjectCode == subjectCode);
+                        string fullStaff = matchedSubject?.StaffAssigned ?? "---";
+
+                        string staffName = "---", staffId = "---";
+                        if (fullStaff.Contains("("))
+                        {
+                            var nameIdParts = fullStaff.Split("(", StringSplitOptions.TrimEntries);
+                            staffName = nameIdParts[0].Trim();
+                            staffId = nameIdParts[1].Replace(")", "").Trim();
+                        }
+
                         var staffInsertCmd = new NpgsqlCommand(@"
                     INSERT INTO staff_timetable
-                    (staff_name, department, year, semester, section, day, hour, subject_code, subject_name)
+                    (staff_name, staff_id, department, year, semester, section, day, hour, subject_code, subject_name)
                     VALUES
-                    (@staff_name, @department, @year, @semester, @section, @day, @hour, @subject_code, @subject_name);
+                    (@staff_name, @staff_id, @department, @year, @semester, @section, @day, @hour, @subject_code, @subject_name);
                 ", conn);
 
-                        staffInsertCmd.Parameters.AddWithValue("@staff_name", staff);
+                        staffInsertCmd.Parameters.AddWithValue("@staff_name", staffName);
+                        staffInsertCmd.Parameters.AddWithValue("@staff_id", staffId);
                         staffInsertCmd.Parameters.AddWithValue("@department", request.Department);
                         staffInsertCmd.Parameters.AddWithValue("@year", request.Year);
                         staffInsertCmd.Parameters.AddWithValue("@semester", request.Semester);
@@ -488,8 +554,6 @@ namespace YourNamespace.Controllers
                         staffInsertCmd.Parameters.AddWithValue("@day", daySlot.Day);
                         staffInsertCmd.Parameters.AddWithValue("@hour", hour);
                         staffInsertCmd.Parameters.AddWithValue("@subject_code", subjectCode);
-
-                        var matchedSubject = subjects.FirstOrDefault(s => s.SubjectCode == subjectCode);
                         staffInsertCmd.Parameters.AddWithValue("@subject_name", matchedSubject?.SubjectName ?? "---");
 
                         await staffInsertCmd.ExecuteNonQueryAsync();
@@ -567,28 +631,218 @@ namespace YourNamespace.Controllers
                 return StatusCode(500, new { message = "Error storing assignment", error = ex.Message });
             }
         }
-    }
 
-
-    public class TimetableRequest
-    {
-        public string Department { get; set; }
-        public string Year { get; set; }
-        public string Semester { get; set; }
-        public string Section { get; set; }
-
-        public List<SubjectInput> Subjects { get; set; }
-
-        public class SubjectInput
+        [HttpGet("getStaffTimetableById")]
+        public async Task<IActionResult> GetStaffTimetableById([FromQuery] string staffId)
         {
-            public string SubjectCode { get; set; }
-            public string SubjectName { get; set; }
-            public string SubjectType { get; set; }
-            public int Credit { get; set; }
-            public string StaffAssigned { get; set; }
+            var connectionString = _configuration.GetConnectionString("DefaultConnection");
+
+            try
+            {
+                using var conn = new NpgsqlConnection(connectionString);
+                await conn.OpenAsync();
+
+                string staffName = "---";
+                var resultList = new List<object>();
+
+                // join on sub_code (not subject_code) in subject_data2
+                var query = @"
+            SELECT
+                st.staff_name,
+                st.department,
+                st.year,
+                st.section,
+                st.day,
+                st.hour,
+                st.subject_code,
+                sd.subject_id
+            FROM staff_timetable AS st
+            LEFT JOIN subject_data2 AS sd
+              ON LOWER(st.subject_code) = LOWER(sd.sub_code)
+            WHERE LOWER(st.staff_id) = LOWER(@staffId)
+            ORDER BY st.day, st.hour;
+        ";
+
+                using var cmd = new NpgsqlCommand(query, conn);
+                cmd.Parameters.AddWithValue("@staffId", staffId.Trim());
+
+                using var reader = await cmd.ExecuteReaderAsync();
+                while (await reader.ReadAsync())
+                {
+                    // capture the first occurrence of staff_name
+                    if (staffName == "---")
+                        staffName = reader["staff_name"]?.ToString() ?? "---";
+
+                    resultList.Add(new
+                    {
+                        Department = reader["department"].ToString(),
+                        Year = reader["year"].ToString(),
+                        Section = reader["section"].ToString(),
+                        Day = reader["day"].ToString(),
+                        Hour = Convert.ToInt32(reader["hour"]),
+                        SubjectCode = reader["subject_code"].ToString(),
+                        SubjectId = reader["subject_id"] == DBNull.Value
+                                          ? ""
+                                          : reader["subject_id"].ToString()
+                    });
+                }
+
+                if (resultList.Count == 0)
+                {
+                    return NotFound(new
+                    {
+                        message = "❌ No timetable found for given staff ID.",
+                        staffId
+                    });
+                }
+
+                return Ok(new
+                {
+                    staffId,
+                    staffName,
+                    records = resultList
+                });
+            }
+            catch (Exception ex)
+            {
+                return StatusCode(500, new
+                {
+                    message = "❌ Error occurred while fetching staff timetable.",
+                    error = ex.Message
+                });
+            }
         }
+
+        [HttpGet("periods")]
+        public async Task<IActionResult> GetStaffSubjectPeriodCounts()
+        {
+            var connectionString = _configuration.GetConnectionString("DefaultConnection");
+            var result = new List<object>();
+            var query = @"
+    SELECT 
+        staff_id, 
+        staff_name, 
+        department,
+        subject_code, 
+        subject_name, 
+        COUNT(*) AS period_count
+    FROM staff_timetable
+    GROUP BY staff_id, staff_name, department, subject_code, subject_name
+    ORDER BY staff_id, subject_name;
+";
+
+            try
+            {
+                using var conn = new NpgsqlConnection(connectionString);
+                await conn.OpenAsync();
+
+                using var cmd = new NpgsqlCommand(query, conn);
+                using var reader = await cmd.ExecuteReaderAsync();
+
+                while (await reader.ReadAsync())
+                {
+                    result.Add(new
+                    {
+                        staffId = reader["staff_id"].ToString(),
+                        staffName = reader["staff_name"].ToString(),
+                        department = reader["department"].ToString(),
+                        subjectCode = reader["subject_code"].ToString(),
+                        subjectName = reader["subject_name"].ToString(),
+                        count = Convert.ToInt32(reader["period_count"])  // Safe conversion from Int64 to Int32
+                    });
+                }
+
+                return Ok(result);
+            }
+            catch (System.Exception ex)
+            {
+                return StatusCode(500, new
+                {
+                    message = "❌ Failed to retrieve staff period counts",
+                    error = ex.Message
+                });
+            }
+
+
+
+
+        }
+
+
+
+        [HttpPut("update")]
+        public async Task<IActionResult> UpdateStaff([FromBody] StaffDto staff)
+        {
+            var connString = _configuration.GetConnectionString("DefaultConnection");
+            try
+            {
+                using var conn = new NpgsqlConnection(connString);
+                await conn.OpenAsync();
+
+                var query = @"
+            UPDATE staff_data2 SET
+              name = @name,
+              subject1 = @subject1,
+              subject2 = @subject2,
+              subject3 = @subject3
+            WHERE staff_id = @staffId;
+        ";
+
+                using var cmd = new NpgsqlCommand(query, conn);
+                cmd.Parameters.AddWithValue("@name", staff.name);
+                cmd.Parameters.AddWithValue("@subject1", staff.subject1 ?? "");
+                cmd.Parameters.AddWithValue("@subject2", staff.subject2 ?? "");
+                cmd.Parameters.AddWithValue("@subject3", staff.subject3 ?? "");
+                cmd.Parameters.AddWithValue("@staffId", staff.staffId);
+
+                int affected = await cmd.ExecuteNonQueryAsync();
+                return Ok(new { message = affected > 0 ? "✅ Updated" : "❌ Not found" });
+            }
+            catch (Exception ex)
+            {
+                return StatusCode(500, new { message = "❌ Error updating staff", error = ex.Message });
+            }
+
+
+        }
+
+
+        public class StaffDto
+        {
+            public string? department { get; set; }
+            public string? department_id { get; set; }
+            public string? block { get; set; }
+            public string staffId { get; set; }
+            public string name { get; set; }
+            public string? subject1 { get; set; }
+            public string? subject2 { get; set; }
+            public string? subject3 { get; set; }
+        }
+
+
+
+
+
+        public class TimetableRequest
+        {
+            public string Department { get; set; }
+            public string Year { get; set; }
+            public string Semester { get; set; }
+            public string Section { get; set; }
+
+            public List<SubjectInput> Subjects { get; set; }
+
+            public class SubjectInput
+            {
+                public string SubjectCode { get; set; }
+                public string SubjectName { get; set; }
+                public string SubjectType { get; set; }
+                public int Credit { get; set; }
+                public string StaffAssigned { get; set; }
+            }
+        }
+
+
+
     }
-
-
-
 }

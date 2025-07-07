@@ -29,7 +29,7 @@ namespace Timetablegenerator.Controllers
                 conn.Open();
 
                 string query = @"
-                    SELECT sub_code, subject_name, subject_type, credit
+                    SELECT subject_id, sub_code, subject_name, subject_type, credit
                     FROM subject_data2
                     WHERE year = @year AND sem = @sem AND department_id = @department_id;
                 ";
@@ -45,6 +45,7 @@ namespace Timetablegenerator.Controllers
                 {
                     result.Add(new SubjectResultDto
                     {
+                        SubjectId = reader["subject_id"].ToString(),
                         SubCode = reader["sub_code"].ToString(),
                         SubjectName = reader["subject_name"].ToString(),
                         SubjectType = reader["subject_type"].ToString(),
@@ -111,6 +112,7 @@ namespace Timetablegenerator.Controllers
         // ✅ DTOs
         public class SubjectResultDto
         {
+            public string SubjectId { get; set; }        // ✅ New field
             public string SubCode { get; set; }
             public string SubjectName { get; set; }
             public string SubjectType { get; set; }
