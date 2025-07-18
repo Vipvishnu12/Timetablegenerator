@@ -16,6 +16,7 @@ namespace TimetableGA
             public string SubjectType { get; set; } // "Theory", "Lab", "Embedded"
             public int Credit { get; set; }
             public string StaffAssigned { get; set; }
+            public string LabId { get; set; } // NEW
         }
 
         public class TimetableSlot
@@ -32,13 +33,13 @@ namespace TimetableGA
 
         public (List<TimetableSlot> timetable, List<Conflict> conflicts) Generate(
             List<Subject> subjects,
-            Dictionary<string, Dictionary<string, HashSet<int>>> globalStaffAvailability)
+            Dictionary<string, Dictionary<string, HashSet<int>>> globalStaffAvailability,
+            Dictionary<string, Dictionary<string, HashSet<int>>> labAvailability) // NEW
         {
             int totalDays = Days.Length;
             var timetable = new TimetableSlot[totalDays];
             var conflicts = new List<Conflict>();
 
-            // Initialize timetable structure
             for (int i = 0; i < totalDays; i++)
             {
                 timetable[i] = new TimetableSlot { Day = Days[i] };
@@ -48,7 +49,6 @@ namespace TimetableGA
                 }
             }
 
-            // Ensure all staff are initialized in globalStaffAvailability
             foreach (var subject in subjects)
             {
                 string staff = subject.StaffAssigned;
@@ -56,16 +56,20 @@ namespace TimetableGA
                 {
                     globalStaffAvailability[staff] = Days.ToDictionary(day => day, day => new HashSet<int>());
                 }
+
+                if (!string.IsNullOrWhiteSpace(subject.LabId)) // Init lab availability
+                {
+                    if (!labAvailability.ContainsKey(subject.LabId))
+                        labAvailability[subject.LabId] = Days.ToDictionary(day => day, day => new HashSet<int>());
+                }
             }
 
             var rand = new Random();
 
-            // Group subjects
             var labs = subjects.Where(s => s.SubjectType.ToLower() == "lab").ToList();
             var embeddeds = subjects.Where(s => s.SubjectType.ToLower() == "embedded").ToList();
             var theories = subjects.Except(labs).Except(embeddeds).ToList();
 
-            // 1️⃣ Assign Lab subjects (4 continuous hours)
             foreach (var lab in labs)
             {
                 bool placed = false;
@@ -78,7 +82,8 @@ namespace TimetableGA
                     {
                         bool allFree = Enumerable.Range(startHour, 4).All(h =>
                             timetable[dayIdx].HourlySlots[h] == "---" &&
-                            !globalStaffAvailability[lab.StaffAssigned][day].Contains(h));
+                            !globalStaffAvailability[lab.StaffAssigned][day].Contains(h) &&
+                            (string.IsNullOrWhiteSpace(lab.LabId) || !labAvailability[lab.LabId][day].Contains(h)));
 
                         if (allFree)
                         {
@@ -86,6 +91,8 @@ namespace TimetableGA
                             {
                                 timetable[dayIdx].HourlySlots[h] = $"{lab.SubjectCode} ({lab.StaffAssigned})";
                                 globalStaffAvailability[lab.StaffAssigned][day].Add(h);
+                                if (!string.IsNullOrWhiteSpace(lab.LabId))
+                                    labAvailability[lab.LabId][day].Add(h);
                             }
                             placed = true;
                             break;
@@ -104,7 +111,6 @@ namespace TimetableGA
                 }
             }
 
-            // 2️⃣ Assign Embedded subjects (2 Theory slots + 2 continuous Lab hours)
             foreach (var embedded in embeddeds)
             {
                 int theoryHours = 0;
@@ -114,7 +120,6 @@ namespace TimetableGA
                 {
                     string day = Days[dayIdx];
 
-                    // Try 2 theory hours (non-continuous)
                     for (int h = 1; h <= HoursPerDay && theoryHours < 2; h++)
                     {
                         if (timetable[dayIdx].HourlySlots[h] == "---" &&
@@ -126,7 +131,6 @@ namespace TimetableGA
                         }
                     }
 
-                    // Try 2 continuous lab hours
                     for (int startHour = 1; startHour <= HoursPerDay - 1 && labBlock == 0; startHour++)
                     {
                         bool free = Enumerable.Range(startHour, 2).All(h =>
@@ -158,7 +162,6 @@ namespace TimetableGA
                 }
             }
 
-            // 3️⃣ Assign Theory subjects
             var remaining = new List<Subject>();
             foreach (var t in theories)
             {

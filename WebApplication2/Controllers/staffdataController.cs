@@ -93,6 +93,9 @@ namespace Timetablegenerator.Controllers
             }
         }
 
+
+
+
         // ✅ NEW: GET staff list by department_id
         [HttpGet("department/{departmentId}")]
         public IActionResult GetStaffByDepartment(string departmentId)
