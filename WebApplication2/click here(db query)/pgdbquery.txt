@@ -1,6 +1,6 @@
 
 
-CREATE TABLE staff_data2 (
+CREATE TABLE staff_data (
     id INT4 NOT NULL,
     staff_id VARCHAR(50),
     name VARCHAR(100),
@@ -14,7 +14,7 @@ CREATE TABLE staff_data2 (
 );
 
 
-CREATE TABLE subject_data2 (
+CREATE TABLE subject_data (
     id INT4 NOT NULL,
     sub_code TEXT,
     subject_name TEXT,
@@ -27,7 +27,7 @@ CREATE TABLE subject_data2 (
     subject_id VARCHAR(100),
     PRIMARY KEY (id)
 
-CREATE TABLE subject_assignments (
+CREATE TABLE subject_request (
     id INT4 NOT NULL,
     sub_code VARCHAR(20),
     subject_name VARCHAR(100),
@@ -45,15 +45,15 @@ CREATE TABLE subject_assignments (
 
 
 CREATE TABLE admin (
-    department_id VARCHAR(20) NOT NULL,
-    department_name VARCHAR(100),
-    block VARCHAR(50),
+    id VARCHAR(20)  NOT NULL,
+    username VARCHAR(100),
+  
     password VARCHAR(100),
-    created_at TIMESTAMP,
-    PRIMARY KEY (department_id)
+    roll varchar(20),
+    PRIMARY KEY (id)
 );
 
-CREATE TABLE cross_class_timetable (
+CREATE TABLE class_timetable (
     id INT4 NOT NULL,
     from_department VARCHAR(50),
     to_department VARCHAR(50),
@@ -97,6 +97,7 @@ CREATE TABLE staff_timetable (
     subject_name VARCHAR(255),
     staff_id VARCHAR(50),
     PRIMARY KEY (id)
+<<<<<<< HEAD
 );
 
 INSERT INTO login (id, username, password)
@@ -119,9 +120,14 @@ CREATE TABLE lab_timetable (
     section VARCHAR(10) NOT NULL,
     day VARCHAR(10) NOT NULL,
     hour INT NOT NULL
+=======
+>>>>>>> 3beb577eb91d32149fc456b7ff15821988664a69
 );
 
+INSERT INTO login (id, username, password)
+VALUES (2, 'ADMIN', 'admin@123');
 
+<<<<<<< HEAD
 
 CREATE TABLE labs (
     lab_id VARCHAR(20) PRIMARY KEY,
@@ -129,3 +135,169 @@ CREATE TABLE labs (
     department VARCHAR(50) NOT NULL,
     systems INT NOT NULL
 );
+=======
+>>>>>>> 3beb577eb91d32149fc456b7ff15821988664a69
+
+ 
+
+
+
+
+
+
+
+
+ using System;
+using System.ComponentModel.DataAnnotations;
+using System.ComponentModel.DataAnnotations.Schema;
+
+namespace YourNamespace.Models
+{
+    [Table("staff_data")]
+    public class StaffData
+    {
+        [Key]
+        public int Id { get; set; }
+
+        public string StaffId { get; set; }
+        public string Name { get; set; }
+        public string Subject1 { get; set; }
+        public string Subject2 { get; set; }
+        public string Subject3 { get; set; }
+        public string Block { get; set; }
+        public string Department { get; set; }
+        public string DepartmentId { get; set; }
+    }
+
+    [Table("subject_data")]
+    public class SubjectData
+    {
+        [Key]
+        public int Id { get; set; }
+
+        public string SubCode { get; set; }
+        public string SubjectName { get; set; }
+        public string Year { get; set; }
+        public string Sem { get; set; }
+        public string Department { get; set; }
+        public string DepartmentId { get; set; }
+        public string SubjectType { get; set; }
+        public int Credit { get; set; }
+        public string SubjectId { get; set; }
+    }
+
+    [Table("subject_request")]
+    public class SubjectRequest
+    {
+        [Key]
+        public int Id { get; set; }
+
+        public string SubCode { get; set; }
+        public string SubjectName { get; set; }
+        public string SubjectType { get; set; }
+        public int Credit { get; set; }
+        public string StaffAssigned { get; set; }
+        public string AssignedStaff { get; set; }
+        public string Year { get; set; }
+        public string Semester { get; set; }
+        public string Section { get; set; }
+        public string Department { get; set; }
+        public string lab_id { get; set; }
+        public DateTime CreatedAt { get; set; }
+    }
+
+    [Table("admin")]
+    public class Admin
+    {
+        [Key]
+        public string Id { get; set; }
+
+        public string Username { get; set; }
+        public string Password { get; set; }
+        public string Roll { get; set; }
+    }
+
+    [Table("class_timetable")]
+    public class ClassTimetable
+    {
+        [Key]
+        public int Id { get; set; }
+
+        public string FromDepartment { get; set; }
+        public string ToDepartment { get; set; }
+        public string Year { get; set; }
+        public string Semester { get; set; }
+        public string Section { get; set; }
+        public string Day { get; set; }
+        public int Hour { get; set; }
+        public string SubjectCode { get; set; }
+        public string SubjectName { get; set; }
+        public string StaffAssigned { get; set; }
+    }
+
+    [Table("cross_department_assignr")]
+    public class CrossDepartmentAssignr
+    {
+        [Key]
+        public int Id { get; set; }
+
+        public string FromDepartment { get; set; }
+        public string ToDepartment { get; set; }
+        public string SubjectCode { get; set; }
+        public string SubjectName { get; set; }
+        public string Year { get; set; }
+        public string Semester { get; set; }
+        public string Section { get; set; }
+        public DateTime AssignedAt { get; set; }
+        public string AssignedStaff { get; set; }
+    }
+
+    [Table("staff_timetable")]
+    public class StaffTimetable
+    {
+        [Key]
+        public int Id { get; set; }
+
+        public string StaffName { get; set; }
+        public string Department { get; set; }
+        public string Year { get; set; }
+        public string Semester { get; set; }
+        public string Section { get; set; }
+        public string Day { get; set; }
+        public int Hour { get; set; }
+        public string SubjectCode { get; set; }
+        public string SubjectName { get; set; }
+        public string StaffId { get; set; }
+    }
+
+    [Table("lab_timetable")]
+    public class LabTimetable
+    {
+        [Key]
+        public int Id { get; set; }
+
+        public string LabId { get; set; }
+        public string SubjectCode { get; set; }
+        public string SubjectName { get; set; }
+        public string StaffAssigned { get; set; }
+        public string Department { get; set; }
+        public string Year { get; set; }
+        public string Semester { get; set; }
+        public string Section { get; set; }
+        public string Day { get; set; }
+        public int Hour { get; set; }
+    }
+
+    [Table("labs")]
+    public class Lab
+    {
+        [Key]
+        public string LabId { get; set; }
+
+        public string LabName { get; set; }
+        public string Department { get; set; }
+        public int Systems { get; set; }
+    }
+
+  
+

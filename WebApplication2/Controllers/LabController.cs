@@ -102,51 +102,7 @@ namespace YourNamespace.Controllers
         }
 
 
-        [HttpGet("timetable")]
-        public async Task<IActionResult> GetLabTimetable()
-        {
-            try
-            {
-                var connectionString = _configuration.GetConnectionString("DefaultConnection");
-
-                using var conn = new NpgsqlConnection(connectionString);
-                await conn.OpenAsync();
-
-                var query = @"SELECT id, lab_id, subject_code, subject_name, staff_assigned, department,
-                             year, semester, section, day, hour
-                      FROM lab_timetable";
-
-                using var cmd = new NpgsqlCommand(query, conn);
-                using var reader = await cmd.ExecuteReaderAsync();
-
-                var timetable = new List<object>();
-
-                while (await reader.ReadAsync())
-                {
-                    timetable.Add(new
-                    {
-                        Id = reader["id"],
-                        LabId = reader["lab_id"],
-                        SubjectCode = reader["subject_code"],
-                        SubjectName = reader["subject_name"],
-                        StaffAssigned = reader["staff_assigned"],
-                        Department = reader["department"],
-                        Year = reader["year"],
-                        Semester = reader["semester"],
-                        Section = reader["section"],
-                        Day = reader["day"],
-                        Hour = reader["hour"]
-                    });
-                }
-
-                return Ok(timetable);
-            }
-            catch (Exception ex)
-            {
-                return StatusCode(500, new { message = "❌ Failed to retrieve lab timetable.", error = ex.Message });
-            }
-        }
-
+  
 
 
 
@@ -185,6 +141,83 @@ namespace YourNamespace.Controllers
             }
         }
 
+
+
+
+        [HttpGet("getTimetableByLabId")]
+        public async Task<IActionResult> GetTimetableByLabId([FromQuery] string labId)
+        {
+            if (string.IsNullOrWhiteSpace(labId))
+                return BadRequest(new { message = "⚠️ Lab ID is required." });
+
+            try
+            {
+                var connectionString = _configuration.GetConnectionString("DefaultConnection");
+
+                using var conn = new NpgsqlConnection(connectionString);
+                await conn.OpenAsync();
+
+                var query = @"
+            SELECT subject_code, subject_name, staff_assigned, department, year, semester, section, day, hour
+            FROM lab_timetable
+            WHERE lab_id = @labId
+            ORDER BY day, hour";
+
+                using var cmd = new NpgsqlCommand(query, conn);
+                cmd.Parameters.AddWithValue("@labId", labId);
+
+                using var reader = await cmd.ExecuteReaderAsync();
+
+                var records = new List<object>();
+
+                while (await reader.ReadAsync())
+                {
+                    records.Add(new
+                    {
+                        SubjectId = reader["subject_name"].ToString(),
+                        SubjectCode = reader["subject_code"].ToString(),
+                        Staff = reader["staff_assigned"].ToString(),
+                        Department = reader["department"].ToString(),
+                        Year = reader["year"].ToString(),
+                        Semester = reader["semester"].ToString(),
+                        Section = reader["section"].ToString(),
+                        Day = reader["day"].ToString(),
+                        Hour = Convert.ToInt32(reader["hour"])
+                    });
+                }
+
+                return Ok(new
+                {
+                    labId = labId,
+                    labName = labId, // You can replace this if you fetch from `labs` table
+                    records
+                });
+            }
+            catch (Exception ex)
+            {
+                return StatusCode(500, new { message = "❌ Failed to load timetable.", error = ex.Message });
+            }
+        }
+
+        public class LabTimetableResponseDto
+        {
+            public string LabId { get; set; }
+            public string LabName { get; set; }
+            public List<LabTimetableRecordDto> Records { get; set; }
+        }
+
+        public class LabTimetableRecordDto
+        {
+            public string SubjectId { get; set; }
+            public string SubjectCode { get; set; }
+            public string Staff { get; set; }
+            public string Department { get; set; }
+            public string Year { get; set; }
+            public string Semester { get; set; }
+            public string Section { get; set; }
+            public string Day { get; set; }
+            public int Hour { get; set; }
+        }
 
         public class LabModel
         {

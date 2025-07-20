@@ -1009,6 +1009,212 @@ ORDER BY
         }
 
 
+
+
+        [HttpGet("generateCrossDepartmentTimetable")]
+        public async Task<IActionResult> GenerateCrossDepartmentTimetable(
+        [FromQuery] string toDepartment,
+        [FromQuery] string year,
+        [FromQuery] string semester,
+        [FromQuery] string section)
+        {
+            var connectionString = _configuration.GetConnectionString("DefaultConnection");
+
+            try
+            {
+                var subjects = new List<TimetableEngine.Subject>();
+                var globalStaffAvailability = new Dictionary<string, Dictionary<string, HashSet<int>>>();
+                var labAvailability = new Dictionary<string, Dictionary<string, HashSet<int>>>();
+                var labTimetable = new List<object>();
+
+                using var conn = new NpgsqlConnection(connectionString);
+                await conn.OpenAsync();
+
+                var query = @"
+            SELECT * FROM subject_assignments
+            WHERE LOWER(department) = LOWER(@toDepartment)
+              AND LOWER(year) = LOWER(@year)
+              AND LOWER(semester) = LOWER(@semester)
+              AND LOWER(section) = LOWER(@section)
+              AND staff_assigned IS NOT NULL AND TRIM(staff_assigned) <> ''";
+
+                using var cmd = new NpgsqlCommand(query, conn);
+                cmd.Parameters.AddWithValue("@toDepartment", toDepartment.Trim());
+                cmd.Parameters.AddWithValue("@year", year.Trim());
+                cmd.Parameters.AddWithValue("@semester", semester.Trim());
+                cmd.Parameters.AddWithValue("@section", section.Trim());
+
+                using var reader = await cmd.ExecuteReaderAsync();
+                while (await reader.ReadAsync())
+                {
+                    subjects.Add(new TimetableEngine.Subject
+                    {
+                        SubjectCode = reader["sub_code"]?.ToString() ?? "---",
+                        SubjectName = reader["subject_name"]?.ToString() ?? "---",
+                        SubjectType = reader["subject_type"]?.ToString() ?? "Theory",
+                        Credit = Convert.ToInt32(reader["credit"]),
+                        StaffAssigned = reader["staff_assigned"]?.ToString() ?? "---",
+                        LabId = reader["lab_id"]?.ToString()
+                    });
+                }
+                reader.Close();
+
+                if (subjects.Count == 0)
+                {
+                    return BadRequest(new
+                    {
+                        message = "❌ No valid subjects found. Ensure all have assigned staff.",
+                        debug = new { toDepartment, year, semester, section }
+                    });
+                }
+
+                var availabilityQuery = "SELECT staff_assigned, day, hour FROM cross_class_timetable";
+                using var existingCmd = new NpgsqlCommand(availabilityQuery, conn);
+                using var availabilityReader = await existingCmd.ExecuteReaderAsync();
+                while (await availabilityReader.ReadAsync())
+                {
+                    var staff = availabilityReader["staff_assigned"].ToString();
+                    var day = availabilityReader["day"].ToString();
+                    var hour = Convert.ToInt32(availabilityReader["hour"]);
+
+                    if (!globalStaffAvailability.ContainsKey(staff))
+                    {
+                        globalStaffAvailability[staff] = new();
+                        foreach (var d in new[] { "Mon", "Tue", "Wed", "Thu", "Fri" })
+                            globalStaffAvailability[staff][d] = new();
+                    }
+
+                    globalStaffAvailability[staff][day].Add(hour);
+                }
+                availabilityReader.Close();
+
+                var engine = new TimetableEngine();
+                var (timetable, conflicts) = engine.Generate(subjects, globalStaffAvailability, labAvailability);
+
+                foreach (var daySlot in timetable)
+                {
+                    foreach (var kv in daySlot.HourlySlots)
+                    {
+                        string value = kv.Value;
+                        if (value == "---") continue;
+
+                        var hour = kv.Key;
+                        var parts = value.Split("(", StringSplitOptions.TrimEntries);
+                        string subjectCode = parts[0].Trim();
+                        string rawStaffId = parts.Length > 1 ? parts[1].Replace(")", "").Trim() : "---";
+
+                        var matchedSubject = subjects.FirstOrDefault(s => s.SubjectCode == subjectCode);
+                        string fullStaff = matchedSubject?.StaffAssigned ?? "---";
+
+                        string staffName = "---", staffId = "---";
+                        if (fullStaff.Contains("("))
+                        {
+                            var nameIdParts = fullStaff.Split("(", StringSplitOptions.TrimEntries);
+                            staffName = nameIdParts[0].Trim();
+                            staffId = nameIdParts[1].Replace(")", "").Trim();
+                        }
+
+                        var insertCmd = new NpgsqlCommand(@"
+                    INSERT INTO cross_class_timetable 
+                    (from_department, to_department, year, semester, section, day, hour, subject_code, staff_assigned)
+                    VALUES (@from_department, @to_department, @year, @semester, @section, @day, @hour, @subject_code, @staff_assigned);
+                ", conn);
+
+                        insertCmd.Parameters.AddWithValue("@from_department", toDepartment);
+                        insertCmd.Parameters.AddWithValue("@to_department", toDepartment);
+                        insertCmd.Parameters.AddWithValue("@year", year);
+                        insertCmd.Parameters.AddWithValue("@semester", semester);
+                        insertCmd.Parameters.AddWithValue("@section", section);
+                        insertCmd.Parameters.AddWithValue("@day", daySlot.Day);
+                        insertCmd.Parameters.AddWithValue("@hour", hour);
+                        insertCmd.Parameters.AddWithValue("@subject_code", subjectCode);
+                        insertCmd.Parameters.AddWithValue("@staff_assigned", rawStaffId);
+                        await insertCmd.ExecuteNonQueryAsync();
+
+                        var staffInsertCmd = new NpgsqlCommand(@"
+                    INSERT INTO staff_timetable
+                    (staff_name, department, year, semester, section, day, hour, subject_code, subject_name, staff_id)
+                    VALUES
+                    (@staff_name, @department, @year, @semester, @section, @day, @hour, @subject_code, @subject_name, @staff_id);
+                ", conn);
+
+                        staffInsertCmd.Parameters.AddWithValue("@staff_name", staffName);
+                        staffInsertCmd.Parameters.AddWithValue("@staff_id", staffId);
+                        staffInsertCmd.Parameters.AddWithValue("@department", toDepartment);
+                        staffInsertCmd.Parameters.AddWithValue("@year", year);
+                        staffInsertCmd.Parameters.AddWithValue("@semester", semester);
+                        staffInsertCmd.Parameters.AddWithValue("@section", section);
+                        staffInsertCmd.Parameters.AddWithValue("@day", daySlot.Day);
+                        staffInsertCmd.Parameters.AddWithValue("@hour", hour);
+                        staffInsertCmd.Parameters.AddWithValue("@subject_code", subjectCode);
+                        staffInsertCmd.Parameters.AddWithValue("@subject_name", matchedSubject?.SubjectName ?? "---");
+                        await staffInsertCmd.ExecuteNonQueryAsync();
+
+                        if (matchedSubject?.SubjectType?.Trim().ToLower() == "lab" && !string.IsNullOrEmpty(matchedSubject.LabId))
+                        {
+                            var labInsertCmd = new NpgsqlCommand(@"
+                        INSERT INTO lab_timetable
+                        (lab_id, subject_code, subject_name, staff_assigned, department, year, semester, section, day, hour)
+                        VALUES
+                        (@lab_id, @subject_code, @subject_name, @staff_assigned, @department, @year, @semester, @section, @day, @hour);
+                    ", conn);
+
+                            labInsertCmd.Parameters.AddWithValue("@lab_id", matchedSubject.LabId);
+                            labInsertCmd.Parameters.AddWithValue("@subject_code", matchedSubject.SubjectCode);
+                            labInsertCmd.Parameters.AddWithValue("@subject_name", matchedSubject.SubjectName);
+                            labInsertCmd.Parameters.AddWithValue("@staff_assigned", matchedSubject.StaffAssigned);
+                            labInsertCmd.Parameters.AddWithValue("@department", toDepartment);
+                            labInsertCmd.Parameters.AddWithValue("@year", year);
+                            labInsertCmd.Parameters.AddWithValue("@semester", semester);
+                            labInsertCmd.Parameters.AddWithValue("@section", section);
+                            labInsertCmd.Parameters.AddWithValue("@day", daySlot.Day);
+                            labInsertCmd.Parameters.AddWithValue("@hour", hour);
+                            await labInsertCmd.ExecuteNonQueryAsync();
+
+                            labTimetable.Add(new
+                            {
+                                lab_id = matchedSubject.LabId,
+                                subject_code = matchedSubject.SubjectCode,
+                                subject_name = matchedSubject.SubjectName,
+                                staff_assigned = matchedSubject.StaffAssigned,
+                                department = toDepartment,
+                                year,
+                                semester,
+                                section,
+                                day = daySlot.Day,
+                                hour
+                            });
+                        }
+                    }
+                }
+
+                return Ok(new
+                {
+                    message = conflicts.Count == 0
+                        ? "✅ Timetable generated and stored successfully."
+                        : "⚠ Timetable generated with some conflicts. Stored valid entries.",
+                    timetable,
+                    labTimetable,
+                    usedLabIds = subjects.Select(s => s.LabId).Distinct().ToList(),
+                    conflicts = conflicts.Select(c => new
+                    {
+                        subject = c.Subject.SubjectCode,
+                        staff = c.Subject.StaffAssigned,
+                        reason = c.Reason
+                    })
+                });
+            }
+            catch (Exception ex)
+            {
+                return StatusCode(500, new
+                {
+                    message = "❌ Internal Server Error while generating timetable.",
+                    error = ex.Message
+                });
+            }
+        }
+
+
         public class TimetableRequest
         {
             [JsonPropertyName("department")]

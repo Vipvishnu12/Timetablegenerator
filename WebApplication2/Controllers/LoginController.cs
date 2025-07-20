@@ -28,10 +28,10 @@ namespace YourNamespace.Controllers
                 conn.Open();
 
                 var query = @"
-                    SELECT department_name 
-                    FROM admin 
-                    WHERE department_id = @username AND password = @password
-                ";
+        SELECT department_name,role 
+        FROM admin 
+        WHERE department_id = @username AND password = @password
+    ";
 
                 using var cmd = new NpgsqlCommand(query, conn);
                 cmd.Parameters.AddWithValue("@username", dto.Username.ToUpper());
@@ -41,11 +41,14 @@ namespace YourNamespace.Controllers
                 if (reader.Read())
                 {
                     var deptName = reader.GetString(0);
+                    var role = reader.GetString(1); // Reading the role
+
                     return Ok(new
                     {
                         message = "Login successful",
                         username = dto.Username.ToUpper(),
-                        departmentName = deptName
+                        departmentName = deptName,
+                        role = role
                     });
                 }
                 else
@@ -58,9 +61,8 @@ namespace YourNamespace.Controllers
                 return StatusCode(500, new { message = "Server error", error = ex.Message });
             }
         }
-
-        // ✅ Insert into admin table instead of department
-        [HttpPost("add-department")]
+            // ✅ Insert into admin table instead of department
+            [HttpPost("add-department")]
         public IActionResult AddDepartment([FromBody] DepartmentDto dept)
         {
             if (dept == null || string.IsNullOrWhiteSpace(dept.DepartmentId) ||

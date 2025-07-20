@@ -32,8 +32,8 @@ namespace Timetablegenerator.Controllers
 
                 var query = @"
                     INSERT INTO cross_department_assignments 
-                    (from_department, to_department, subject_code, subject_name, year, semester, section)
-                    VALUES (@fromDept, @toDept, @subCode, @subName, @year, @semester, @section);
+                    (from_department, to_department, subject_code, subject_name, year, semester, section,lab_id)
+                    VALUES (@fromDept, @toDept, @subCode, @subName, @year, @semester, @section,@labId);
                 ";
 
                 using var cmd = new NpgsqlCommand(query, conn);
@@ -44,6 +44,8 @@ namespace Timetablegenerator.Controllers
                 cmd.Parameters.AddWithValue("@year", req.Year);
                 cmd.Parameters.AddWithValue("@semester", req.Semester);
                 cmd.Parameters.AddWithValue("@section", req.Section);
+                cmd.Parameters.AddWithValue("@labId", req.labId);
+
 
                 int affectedRows = cmd.ExecuteNonQuery();
 
@@ -282,6 +284,7 @@ namespace Timetablegenerator.Controllers
         public string Year { get; set; }
         public string Semester { get; set; }
         public string Section { get; set; }
+        public string labId { get; set; }
     }
 
     public class AssignStaffRequest
