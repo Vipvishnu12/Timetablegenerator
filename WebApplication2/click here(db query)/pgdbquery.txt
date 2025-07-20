@@ -301,3 +301,5 @@ namespace YourNamespace.Models
 
   
 
+  ALTER TABLE admin
+ADD COLUMN role VARCHAR(50);
