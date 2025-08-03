@@ -29,16 +29,18 @@ namespace Timetablegenerator.Controllers
 
             try
             {
+
                 foreach (var staff in staffList)
                 {
                     string query = @"
-                        INSERT INTO staff_data2
-                        (department, department_id, block, staff_id, name, subject1, subject2, subject3)
+                        INSERT INTO staff_data
+                        (departmentid, block, staffid, staffname, prefsub1, prefsub2, prefsub3)
                         VALUES 
-                        (@department, @department_id, @block, @staff_id, @name, @subject1, @subject2, @subject3);";
+                        ( @department_id, @block, @staff_id, @name, @subject1, @subject2, @subject3);";
 
                     using var cmd = new NpgsqlCommand(query, conn);
-                    cmd.Parameters.AddWithValue("@department", staff.department ?? "");
+                   
+
                     cmd.Parameters.AddWithValue("@department_id", staff.department_id ?? "");
                     cmd.Parameters.AddWithValue("@block", staff.block ?? "");
                     cmd.Parameters.AddWithValue("@staff_id", staff.staffId ?? "");
@@ -76,7 +78,7 @@ namespace Timetablegenerator.Controllers
                 using var conn = _db.GetConnection();
                 conn.Open();
 
-                string query = "SELECT COUNT(*) FROM staff_data2 WHERE department_id = @dept";
+                string query = "SELECT COUNT(*) FROM staff_data WHERE departmentid = @dept";
                 using var cmd = new NpgsqlCommand(query, conn);
                 cmd.Parameters.AddWithValue("@dept", departmentId);
 
@@ -109,9 +111,9 @@ namespace Timetablegenerator.Controllers
                 conn.Open();
 
                 string query = @"
-                    SELECT staff_id, name, subject1, subject2, subject3 
-                    FROM staff_data2 
-                    WHERE department_id = @dept";
+                    SELECT staffid, staffname, prefsub1, prefsub2, prefsub3 
+                    FROM staff_data 
+                    WHERE departmentid = @dept";
 
                 using var cmd = new NpgsqlCommand(query, conn);
                 cmd.Parameters.AddWithValue("@dept", departmentId);
@@ -123,11 +125,11 @@ namespace Timetablegenerator.Controllers
                 {
                     staffList.Add(new StaffDataDto
                     {
-                        staffId = reader["staff_id"]?.ToString(),
-                        name = reader["name"]?.ToString(),
-                        subject1 = reader["subject1"]?.ToString(),
-                        subject2 = reader["subject2"]?.ToString(),
-                        subject3 = reader["subject3"]?.ToString(),
+                        staffId = reader["staffid"]?.ToString(),
+                        name = reader["staffname"]?.ToString(),
+                        subject1 = reader["prefsub1"]?.ToString(),
+                        subject2 = reader["prefsub2"]?.ToString(),
+                        subject3 = reader["prefsub3"]?.ToString(),
                     });
                 }
 

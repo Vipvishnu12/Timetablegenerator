@@ -1,12 +1,16 @@
-﻿using Microsoft.AspNetCore.Mvc;
+﻿using Azure.Core;
+using Microsoft.AspNetCore.Mvc;
 using Microsoft.Extensions.Configuration;
 using Npgsql;
 using System;
 using System.Collections.Generic;
+using System.Data;
 using System.Linq;
 using System.Text.Json.Serialization;
 using System.Threading.Tasks;
 using TimetableGA;
+using Timetablegenerator;
+using static System.Collections.Specialized.BitVector32;
 using static TimetableGA.TimetableEngine;
 
 namespace YourNamespace.Controllers
@@ -33,21 +37,25 @@ namespace YourNamespace.Controllers
                 using var conn = new NpgsqlConnection(connectionString);
                 await conn.OpenAsync();
 
+          
+
                 var sql = @"
                     SELECT 
                         id,
-                        from_department,
-                        to_department,
-                        subject_code,
-                        subject_name,
+                        
+                        staffname,
+                        department,
+                    
+                        subject_id,
+                        subject_shrt,
                         year,
-                        semester,
-                        section,
-                        assigned_at,
-                        assigned_staff
-                    FROM cross_department_assignments
-                    WHERE from_department = @department
-                    ORDER BY year, semester, section, from_department
+                        sem,
+                        section
+                       ,lab_id
+                        
+                    FROM pendingtimetabledata
+                    WHERE department = @department and status!='generated'
+                    ORDER BY year, sem, section, department
                 ";
 
                 using var cmd = new NpgsqlCommand(sql, conn);
@@ -59,14 +67,14 @@ namespace YourNamespace.Controllers
                     results.Add(new
                     {
                         id = Convert.ToInt32(reader["id"]),
-                        department = reader["from_department"].ToString(),
-                        subject_code = reader["subject_code"].ToString(),
-                        subject_name = reader["subject_name"].ToString(),
+                        department = reader["department"].ToString(),
+                        subject_code = reader["subject_id"].ToString(),
+                        subject_name = reader["subject_shrt"].ToString(),
                         year = reader["year"].ToString(),
-                        semester = reader["semester"].ToString(),
+                        semester = reader["sem"].ToString(),
                         section = reader["section"].ToString(),
-                        assigned_at = reader["assigned_at"] == DBNull.Value ? null : reader["assigned_at"].ToString(),
-                        assignedStaff = reader["assigned_staff"] == DBNull.Value ? null : reader["assigned_staff"].ToString()
+                        assignedStaff = reader["staffname"] == DBNull.Value ? null : reader["staffname"].ToString(),
+                        labid = reader["lab_id"] == DBNull.Value ? null : reader["lab_id"].ToString()
                     });
                 }
 
@@ -300,24 +308,24 @@ namespace YourNamespace.Controllers
 
                 using var conn = new NpgsqlConnection(connectionString);
                 await conn.OpenAsync();
-
+             
                 var query = @"
             SELECT 
                 cct.day, 
                 cct.hour, 
                 cct.subject_code, 
-                cct.staff_assigned, 
-                sd.subject_id
-            FROM cross_class_timetable cct
-            LEFT JOIN subject_data2 sd ON cct.subject_code = sd.sub_code
-            WHERE cct.to_department = @toDepartment
+                cct.staff_name, 
+                sd.subject_shortform
+            FROM classtimetable cct
+            LEFT JOIN subject_data sd ON cct.subject_code = sd.subject_code
+            WHERE cct.department_id = @department_id
               AND cct.year = @year
               AND cct.semester = @semester
               AND cct.section = @section
         ";
 
                 using var cmd = new NpgsqlCommand(query, conn);
-                cmd.Parameters.AddWithValue("@toDepartment", toDepartment.Trim());
+                cmd.Parameters.AddWithValue("@department_id", toDepartment.Trim());
                 cmd.Parameters.AddWithValue("@year", year.Trim());
                 cmd.Parameters.AddWithValue("@semester", semester.Trim());
                 cmd.Parameters.AddWithValue("@section", section.Trim());
@@ -328,8 +336,8 @@ namespace YourNamespace.Controllers
                     var day = reader["day"].ToString();
                     var hour = Convert.ToInt32(reader["hour"]);
                     var subjectCode = reader["subject_code"].ToString();
-                    var staff = reader["staff_assigned"].ToString();
-                    var subjectId = reader["subject_id"]?.ToString() ?? "0"; // VARCHAR support
+                    var staff = reader["staff_name"].ToString();
+                    var subjectId = reader["subject_shortform"]?.ToString() ?? "0"; // VARCHAR support
 
                     var display = $"{subjectCode} ({staff})";
 
@@ -366,6 +374,7 @@ namespace YourNamespace.Controllers
             }
         }
 
+  
 
         [HttpGet("grouped1")]
         public async Task<IActionResult> GetAssignmentsForReceivingDepartment()
@@ -381,22 +390,21 @@ namespace YourNamespace.Controllers
                 var sql = @"
                 SELECT 
     id,
-    from_department,
-    to_department,
-    subject_code,
-    subject_name,
+    department,
+    staff_department,
+    subject_id,
+    subject_shrt,
     year,
-    semester,
+    sem,
     section,
-    assigned_at,
-    assigned_staff
-FROM cross_department_assignments
-WHERE assigned_staff IS NULL OR TRIM(assigned_staff) = ''
+    staffname
+FROM pendingtimetabledata
+WHERE staffname ='From Other Department'
 ORDER BY 
     year,
-    semester,
+    sem,
     section,
-    to_department
+    department
 ";
 
                 using var cmd = new NpgsqlCommand(sql, conn);
@@ -407,14 +415,14 @@ ORDER BY
                     results.Add(new
                     {
                         id = Convert.ToInt32(reader["id"]),
-                        fromDepartment = reader["from_department"].ToString(),
-                        toDepartment = reader["to_department"].ToString(),
-                        subCode = reader["subject_code"].ToString(),
-                        subjectName = reader["subject_name"].ToString(),
+                        fromDepartment = reader["department"].ToString(),
+                        toDepartment = reader["staff_department"].ToString(),
+                        subCode = reader["subject_id"].ToString(),
+                        subjectName = reader["subject_shrt"].ToString(),
                         year = reader["year"].ToString(),
-                        semester = reader["semester"].ToString(),
+                        semester = reader["sem"].ToString(),
                         section = reader["section"].ToString(),
-                        assignedStaff = reader["assigned_staff"] == DBNull.Value ? null : reader["assigned_staff"].ToString()
+                        assignedStaff = reader["staffname"] == DBNull.Value ? null : reader["staffname"].ToString()
                     });
                 }
 
@@ -428,7 +436,94 @@ ORDER BY
 
 
 
+        [HttpPost("save")]
+        public async Task<IActionResult> SavePendingTimetableData([FromBody] TimetableSaveRequest request)
+        {
+            if (request?.Subjects == null || request.Subjects.Count == 0)
+                return BadRequest(new { message = "No subjects provided" });
 
+            var connectionString = _configuration.GetConnectionString("DefaultConnection");
+
+            try
+            {
+                await using var conn = new NpgsqlConnection(connectionString);
+                await conn.OpenAsync();
+
+                await using var tran = await conn.BeginTransactionAsync();
+
+                var sql = @"
+            INSERT INTO pendingtimetabledata
+            (staff_id, staffname, subject_id, lab_id, staff_department,
+             subject_shrt, credit, subtype, department, year, sem, lab_department, section,status)
+            VALUES
+            (@staffId, @staffName, @subjectId, @labId, @staffDepartment,
+             @subjectShortForm, @credit, @subType, @department, @year, @sem, @labDepartment, @section,@status);
+        ";
+
+                foreach (var subject in request.Subjects)
+                {
+                    bool isStaffOtherDept = !string.Equals(subject.StaffDepartment ?? "", request.Department ?? "", StringComparison.OrdinalIgnoreCase);
+                    bool isLabOtherDept = !string.Equals(subject.LabDepartment ?? "", request.Department ?? "", StringComparison.OrdinalIgnoreCase);
+
+                    await using var cmd = new NpgsqlCommand(sql, conn, tran);
+
+                    // Fix for CS0019: Operator '??' cannot be applied to operands of type 'string' and 'DBNull'
+                    // Updated the code to use a ternary operator to handle DBNull explicitly.
+
+                    object staffIdValue = isStaffOtherDept ? (object)"From Other Department" : (subject.StaffId != null ? (object)subject.StaffId : DBNull.Value);
+                    object staffNameValue = isStaffOtherDept ? (object)"From Other Department" : (subject.StaffName != null ? (object)subject.StaffName : DBNull.Value);
+                    object labIdValue = isLabOtherDept ? (object)"From Other Department" : (subject.LabId != null ? (object)subject.LabId : DBNull.Value);
+
+                    cmd.Parameters.AddWithValue("staffId", staffIdValue);
+                    cmd.Parameters.AddWithValue("staffName", staffNameValue);
+                    cmd.Parameters.AddWithValue("subjectId", subject.SubjectCode ?? "");
+                    cmd.Parameters.AddWithValue("labId", labIdValue);
+                    cmd.Parameters.AddWithValue("staffDepartment", subject.StaffDepartment ?? request.Department ?? "");
+                    cmd.Parameters.AddWithValue("subjectShortForm", subject.SubjectShortForm ?? subject.SubjectCode ?? "");
+                    cmd.Parameters.AddWithValue("credit", subject.Credit);
+                    cmd.Parameters.AddWithValue("subType", subject.SubjectType ?? "");
+                    cmd.Parameters.AddWithValue("department", request.Department ?? "");
+                    cmd.Parameters.AddWithValue("year", request.Year ?? "");
+                    cmd.Parameters.AddWithValue("sem", request.Semester ?? "");
+                    cmd.Parameters.AddWithValue("labDepartment", subject.LabDepartment ?? ((subject.SubjectType == "Lab" || subject.SubjectType == "Embedded") ? request.Department : ""));
+                    cmd.Parameters.AddWithValue("section", request.Section ?? "");
+                    cmd.Parameters.AddWithValue("status", "pending");
+
+                    await cmd.ExecuteNonQueryAsync();
+                }
+
+                await tran.CommitAsync();
+
+                return Ok(new { message = "Pending timetable data saved successfully" });
+            }
+            catch (Exception ex)
+            {
+                return StatusCode(500, new { message = "Failed to save timetable data", error = ex.Message });
+            }
+        }
+
+        public class TimetableSaveRequest
+    {
+        public string Department { get; set; } = string.Empty;
+        public string Year { get; set; } = string.Empty;
+        public string Semester { get; set; } = string.Empty;
+        public string Section { get; set; } = string.Empty;
+        public List<SubjectSaveData> Subjects { get; set; } = new List<SubjectSaveData>();
+    }
+
+   
+    public class SubjectSaveData
+    {
+        public string? StaffId { get; set; }
+        public string? StaffName { get; set; }
+        public string? SubjectCode { get; set; }
+        public string? LabId { get; set; }
+        public string? StaffDepartment { get; set; }
+        public string? SubjectShortForm { get; set; }
+        public int Credit { get; set; }
+        public string? SubjectType { get; set; }
+        public string? LabDepartment { get; set; }
+}
         //[HttpPost("generateCrossDepartmentTimetable")]
         //public async Task<IActionResult> GenerateCrossDepartmentTimetable([FromBody] TimetableRequest request)
         //{
@@ -483,9 +578,6 @@ ORDER BY
         //                foreach (var d in new[] { "Mon", "Tue", "Wed", "Thu", "Fri" })
         //                    globalStaffAvailability[staff][d] = new HashSet<int>();
         //            }
-
-        //            if (!globalStaffAvailability[staff].ContainsKey(day))
-        //                globalStaffAvailability[staff][day] = new HashSet<int>();
 
         //            globalStaffAvailability[staff][day].Add(hour);
         //        }
@@ -649,21 +741,23 @@ ORDER BY
                 string staffName = "---";
                 var resultList = new List<object>();
 
+      
+
                 // join on sub_code (not subject_code) in subject_data2
                 var query = @"
             SELECT
                 st.staff_name,
-                st.department,
+                st.department_id,
                 st.year,
                 st.section,
                 st.day,
                 st.hour,
                 st.subject_code,
-                sd.subject_id
-            FROM staff_timetable AS st
-            LEFT JOIN subject_data2 AS sd
-              ON LOWER(st.subject_code) = LOWER(sd.sub_code)
-            WHERE LOWER(st.staff_id) = LOWER(@staffId)
+                sd.subject_shortform
+            FROM classtimetable AS st
+            LEFT JOIN subject_data AS sd
+              ON LOWER(st.subject_code) = LOWER(sd.subject_code)
+            WHERE LOWER(st.staff_code) = LOWER(@staffId)
             ORDER BY st.day, st.hour;
         ";
 
@@ -679,15 +773,15 @@ ORDER BY
 
                     resultList.Add(new
                     {
-                        Department = reader["department"].ToString(),
+                        Department = reader["department_id"].ToString(),
                         Year = reader["year"].ToString(),
                         Section = reader["section"].ToString(),
                         Day = reader["day"].ToString(),
                         Hour = Convert.ToInt32(reader["hour"]),
                         SubjectCode = reader["subject_code"].ToString(),
-                        SubjectId = reader["subject_id"] == DBNull.Value
+                        SubjectId = reader["subject_code"] == DBNull.Value
                                           ? ""
-                                          : reader["subject_id"].ToString()
+                                          : reader["subject_code"].ToString()
                     });
                 }
 
@@ -720,19 +814,20 @@ ORDER BY
         [HttpGet("periods")]
         public async Task<IActionResult> GetStaffSubjectPeriodCounts()
         {
+   
             var connectionString = _configuration.GetConnectionString("DefaultConnection");
             var result = new List<object>();
             var query = @"
     SELECT 
-        staff_id, 
+        staff_code, 
         staff_name, 
-        department,
+        department_id,
         subject_code, 
         subject_name, 
         COUNT(*) AS period_count
-    FROM staff_timetable
-    GROUP BY staff_id, staff_name, department, subject_code, subject_name
-    ORDER BY staff_id, subject_name;
+    FROM classtimetable
+    GROUP BY staff_code, staff_name, department_id, subject_code, subject_name
+    ORDER BY staff_code, subject_name;
 ";
 
             try
@@ -747,9 +842,9 @@ ORDER BY
                 {
                     result.Add(new
                     {
-                        staffId = reader["staff_id"].ToString(),
+                        staffId = reader["staff_code"].ToString(),
                         staffName = reader["staff_name"].ToString(),
-                        department = reader["department"].ToString(),
+                        department = reader["department_id"].ToString(),
                         subjectCode = reader["subject_code"].ToString(),
                         subjectName = reader["subject_name"].ToString(),
                         count = Convert.ToInt32(reader["period_count"])  // Safe conversion from Int64 to Int32
@@ -783,13 +878,14 @@ ORDER BY
                 using var conn = new NpgsqlConnection(connString);
                 await conn.OpenAsync();
 
+        
                 var query = @"
-            UPDATE staff_data2 SET
-              name = @name,
-              subject1 = @subject1,
-              subject2 = @subject2,
-              subject3 = @subject3
-            WHERE staff_id = @staffId;
+            UPDATE staff_data SET
+              staffname = @name,
+              prefsub1 = @subject1,
+              prefsub2 = @subject2,
+              prefsub3 = @subject3
+            WHERE staffid = @staffId;
         ";
 
                 using var cmd = new NpgsqlCommand(query, conn);
@@ -809,39 +905,689 @@ ORDER BY
 
 
         }
-     
-        
+
+        //[HttpPost("generateCrossDepartmentTimetable")]
+        //public async Task<IActionResult> GenerateCrossDepartmentTimetable([FromBody] TimetableRequest request)
+        //{
+        //    var connectionString = _configuration.GetConnectionString("DefaultConnection");
+
+        //    try
+        //    {
+        //        var subjects = new List<TimetableGA.TimetableEngine.Subject>();
+        //        var globalStaffAvailability = new Dictionary<string, Dictionary<string, HashSet<int>>>();
+        //        var labAvailability = new Dictionary<string, Dictionary<string, HashSet<int>>>();
+        //        var labTimetable = new List<object>();
+
+        //        using var conn = new NpgsqlConnection(connectionString);
+        //        await conn.OpenAsync();
+
+        //        // Build subjects
+        //        foreach (var sub in request.Subjects)
+        //        {
+        //            if (string.IsNullOrWhiteSpace(sub.StaffAssigned)) continue;
+
+        //            subjects.Add(new TimetableGA.TimetableEngine.Subject
+        //            {
+        //                SubjectCode = sub.SubjectCode ?? "---",
+        //                SubjectName = sub.SubjectName ?? "---",
+        //                SubjectType = sub.SubjectType ?? "Theory",
+        //                Credit = sub.Credit,
+        //                StaffAssigned = sub.StaffAssigned,
+        //                LabId = (sub.SubjectType?.ToLower() == "lab" || sub.SubjectType?.ToLower() == "embedded")
+        //                    ? (sub.LabId != null ? sub.LabId.Trim() : null)
+        //                    : null
+        //            });
+        //        }
+
+        //        if (subjects.Count == 0)
+        //        {
+        //            return BadRequest(new
+        //            {
+        //                message = "❌ No valid subjects found. Ensure all have assigned staff.",
+        //                receivedPayload = request
+        //            });
+        //        }
+
+        //        // Load lab availability
+        //        var labAvailabilityQuery = "SELECT lab_id, day, hour FROM labtimetable";
+        //        using var labCmd = new NpgsqlCommand(labAvailabilityQuery, conn);
+        //        using var labReader = await labCmd.ExecuteReaderAsync();
+
+        //        while (await labReader.ReadAsync())
+        //        {
+        //            var labId = labReader["lab_id"].ToString();
+        //            var day = labReader["day"].ToString();
+        //            var hour = Convert.ToInt32(labReader["hour"]);
+
+        //            if (!labAvailability.ContainsKey(labId))
+        //            {
+        //                labAvailability[labId] = new Dictionary<string, HashSet<int>>();
+        //                foreach (var d in new[] { "Mon", "Tue", "Wed", "Thu", "Fri" })
+        //                    labAvailability[labId][d] = new HashSet<int>();
+        //            }
+        //            labAvailability[labId][day].Add(hour);
+        //        }
+        //        labReader.Close();
+
+        //        // Load staff availability
+        //        var availabilityQuery = "SELECT staff_code, day, hour FROM classtimetable";
+        //        using var staffCmd = new NpgsqlCommand(availabilityQuery, conn);
+        //        using var reader = await staffCmd.ExecuteReaderAsync();
+
+        //        while (await reader.ReadAsync())
+        //        {
+        //            var staff = reader["staff_code"].ToString();
+        //            var day = reader["day"].ToString();
+        //            var hour = Convert.ToInt32(reader["hour"]);
+
+        //            if (!globalStaffAvailability.ContainsKey(staff))
+        //            {
+        //                globalStaffAvailability[staff] = new();
+        //                foreach (var d in new[] { "Mon", "Tue", "Wed", "Thu", "Fri" })
+        //                    globalStaffAvailability[staff][d] = new();
+        //            }
+        //            globalStaffAvailability[staff][day].Add(hour);
+        //        }
+        //        reader.Close();
+
+        //        // Run GA to generate timetable along with full chromosome
+        //        var engine = new TimetableGA.TimetableEngine();
+        //        engine.Initialize(subjects, globalStaffAvailability, labAvailability);
+        //        var (timetable, conflicts, bestChromosome) = engine.GenerateGA();
+
+        //        // Insert into classtimetable and labtimetable using chromosome info
+
+        //        foreach (var daySlot in timetable)
+        //        {
+        //            foreach (var kv in daySlot.HourlySlots)
+        //            {
+        //                string value = kv.Value;
+        //                if (value == "---") continue;
+
+        //                var hour = kv.Key;
+        //                var parts = value.Split('(', StringSplitOptions.TrimEntries);
+        //                string subjectCode = parts[0].Trim();
+
+        //                var matchedSubject = subjects.FirstOrDefault(s => s.SubjectCode.Trim() == subjectCode);
+        //                if (matchedSubject == null) continue;
+
+        //                string fullStaff = matchedSubject.StaffAssigned ?? "---";
+        //                string staffName = "---", staffId = "---";
+        //                if (fullStaff.Contains("("))
+        //                {
+        //                    var nameId = fullStaff.Split('(', StringSplitOptions.TrimEntries);
+        //                    staffName = nameId[0].Trim();
+        //                    staffId = nameId[1].Replace(")", "").Trim();
+        //                }
+
+        //                // Insert into classtimetable
+        //                var staffInsertCmd = new NpgsqlCommand(@"
+        //            INSERT INTO classtimetable
+        //            (staff_name, staff_code, department_id, year, semester, section, day, hour, subject_code, subject_name)
+        //            VALUES
+        //            (@staff_name, @staff_id, @department, @year, @semester, @section, @day, @hour, @subject_code, @subject_name);", conn);
+        //                staffInsertCmd.Parameters.AddWithValue("@staff_name", staffName);
+        //                staffInsertCmd.Parameters.AddWithValue("@staff_id", staffId);
+        //                staffInsertCmd.Parameters.AddWithValue("@department", request.Department);
+        //                staffInsertCmd.Parameters.AddWithValue("@year", request.Year);
+        //                staffInsertCmd.Parameters.AddWithValue("@semester", request.Semester);
+        //                staffInsertCmd.Parameters.AddWithValue("@section", request.Section);
+        //                staffInsertCmd.Parameters.AddWithValue("@day", daySlot.Day);
+        //                staffInsertCmd.Parameters.AddWithValue("@hour", hour);
+        //                staffInsertCmd.Parameters.AddWithValue("@subject_code", subjectCode);
+        //                staffInsertCmd.Parameters.AddWithValue("@subject_name", matchedSubject.SubjectName);
+        //                await staffInsertCmd.ExecuteNonQueryAsync();
+        //            }
+        //        }
+
+        //        // Insert lab hours by iterating over genes with IsLabBlock true
+        //        foreach (var gene in bestChromosome.Genes)
+        //        {
+        //            if (gene.IsLabBlock && !string.IsNullOrEmpty(gene.LabId))
+        //            {
+        //                var subject = subjects.FirstOrDefault(s => s.SubjectCode == gene.SubjectCode);
+        //                if (subject == null) continue;
+
+        //                for (int h = gene.StartHour; h < gene.StartHour + gene.Duration; h++)
+        //                {
+        //                    var labInsertCmd = new NpgsqlCommand(@"
+        //                INSERT INTO labtimetable
+        //                (lab_id, subject_code, subject_name, staff_name, department, year, semester, section, day, hour)
+        //                VALUES
+        //                (@lab_id, @subject_code, @subject_name, @staff_name, @department, @year, @semester, @section, @day, @hour);", conn);
+
+        //                    labInsertCmd.Parameters.AddWithValue("@lab_id", gene.LabId);
+        //                    labInsertCmd.Parameters.AddWithValue("@subject_code", gene.SubjectCode);
+        //                    labInsertCmd.Parameters.AddWithValue("@subject_name", subject.SubjectName);
+        //                    labInsertCmd.Parameters.AddWithValue("@staff_name", gene.StaffAssigned);
+        //                    labInsertCmd.Parameters.AddWithValue("@department", request.Department);
+        //                    labInsertCmd.Parameters.AddWithValue("@year", request.Year);
+        //                    labInsertCmd.Parameters.AddWithValue("@semester", request.Semester);
+        //                    labInsertCmd.Parameters.AddWithValue("@section", request.Section);
+        //                    labInsertCmd.Parameters.AddWithValue("@day", gene.Day);
+        //                    labInsertCmd.Parameters.AddWithValue("@hour", h);
+        //                    await labInsertCmd.ExecuteNonQueryAsync();
+
+        //                    labTimetable.Add(new
+        //                    {
+        //                        lab_id = gene.LabId,
+        //                        subject_code = gene.SubjectCode,
+        //                        subject_name = subject.SubjectName,
+        //                        staff_assigned = gene.StaffAssigned,
+        //                        department = request.Department,
+        //                        year = request.Year,
+        //                        semester = request.Semester,
+        //                        section = request.Section,
+        //                        day = gene.Day,
+        //                        hour = h
+        //                    });
+        //                }
+        //            }
+        //        }
+
+        //        return Ok(new
+        //        {
+        //            message = conflicts.Count == 0
+        //                ? "✅ Timetable generated and stored successfully."
+        //                : "⚠ Timetable generated with some conflicts. Stored valid entries.",
+        //            timetable,
+        //            labTimetable,
+        //            usedLabIds = subjects.Where(s => !string.IsNullOrEmpty(s.LabId)).Select(s => s.LabId).Distinct().ToList(),
+        //            receivedPayload = request,
+        //            conflicts = conflicts.Select(c => new
+        //            {
+        //                subject = c.Subject?.SubjectCode,
+        //                staff = c.Subject?.StaffAssigned,
+        //                reason = c.Reason
+        //            })
+        //        });
+        //    }
+        //    catch (Exception ex)
+        //    {
+        //        return StatusCode(500, new
+        //        {
+        //            message = "❌ Internal Server Error while generating timetable.",
+        //            error = ex.Message
+        //        });
+        //    }
+        //}
+
+
+        // this    [HttpGet("generateCrossDepartmentTimetable")]
+        //    public async Task<IActionResult> GenerateCrossDepartmentTimetable(
+        //[FromQuery] string toDepartment,
+        //[FromQuery] string year,
+        //[FromQuery] string semester,
+        //[FromQuery] string section)
+        //    {
+        //        var connectionString = _configuration.GetConnectionString("DefaultConnection");
+
+        //        try
+        //        {
+        //            var subjects = new List<TimetableGA.TimetableEngine.Subject>();
+        //            var globalStaffAvailability = new Dictionary<string, Dictionary<string, HashSet<int>>>();
+        //            var labAvailability = new Dictionary<string, Dictionary<string, HashSet<int>>>();
+        //            var labTimetable = new List<object>();
+
+        //            using var conn = new NpgsqlConnection(connectionString);
+        //            await conn.OpenAsync();
+
+        //            // 🟡 STEP 1: Fetch subjects from DB
+        //            var query = @"
+        //        SELECT 
+        //            staffname,
+        //            subject_shrt,
+        //            credit,
+        //            subtype,
+        //            lab_id
+        //        FROM pendingtimetabledata
+        //        WHERE LOWER(department) = LOWER(@toDepartment)
+        //          AND LOWER(year) = LOWER(@year)
+        //          AND LOWER(sem) = LOWER(@semester)
+        //          AND LOWER(section) = LOWER(@section)
+        //          AND TRIM(staffname) IS NOT NULL AND TRIM(staffname) <> ''";
+
+        //            using var cmd = new NpgsqlCommand(query, conn);
+        //            cmd.Parameters.AddWithValue("@toDepartment", toDepartment.Trim());
+        //            cmd.Parameters.AddWithValue("@year", year.Trim());
+        //            cmd.Parameters.AddWithValue("@semester", semester.Trim());
+        //            cmd.Parameters.AddWithValue("@section", section.Trim());
+
+        //            using var reader = await cmd.ExecuteReaderAsync();
+        //            while (await reader.ReadAsync())
+        //            {
+        //                string staffAssigned = reader["staffname"]?.ToString();
+        //                string subjectCode = reader["subject_shrt"]?.ToString() ?? "---";
+        //                string subjectName = subjectCode; // or fetch full name if needed
+        //                string subjectType = reader["subtype"]?.ToString() ?? "Theory";
+        //                int credit = reader["credit"] != DBNull.Value ? Convert.ToInt32(reader["credit"]) : 3;
+        //                string labId = reader["lab_id"]?.ToString();
+
+        //                if (string.IsNullOrWhiteSpace(staffAssigned)) continue;
+
+        //                subjects.Add(new TimetableGA.TimetableEngine.Subject
+        //                {
+        //                    SubjectCode = subjectCode,
+        //                    SubjectName = subjectName,
+        //                    SubjectType = subjectType,
+        //                    Credit = credit,
+        //                    StaffAssigned = staffAssigned,
+        //                    LabId = (subjectType.ToLower() == "lab" || subjectType.ToLower() == "embedded")
+        //                            ? (labId?.Trim())
+        //                            : null
+        //                });
+        //            }
+        //            reader.Close();
+
+        //            if (subjects.Count == 0)
+        //            {
+        //                return BadRequest(new
+        //                {
+        //                    message = "❌ No valid subjects found. Ensure all have assigned staff."
+        //                });
+        //            }
+
+        //            // 🟡 STEP 2: Load lab availability
+        //            var labAvailabilityQuery = "SELECT lab_id, day, hour FROM labtimetable";
+        //            using var labCmd = new NpgsqlCommand(labAvailabilityQuery, conn);
+        //            using var labReader = await labCmd.ExecuteReaderAsync();
+
+        //            while (await labReader.ReadAsync())
+        //            {
+        //                var labId = labReader["lab_id"].ToString();
+        //                var day = labReader["day"].ToString();
+        //                var hour = Convert.ToInt32(labReader["hour"]);
+
+        //                if (!labAvailability.ContainsKey(labId))
+        //                {
+        //                    labAvailability[labId] = new Dictionary<string, HashSet<int>>();
+        //                    foreach (var d in new[] { "Mon", "Tue", "Wed", "Thu", "Fri" })
+        //                        labAvailability[labId][d] = new HashSet<int>();
+        //                }
+        //                labAvailability[labId][day].Add(hour);
+        //            }
+        //            labReader.Close();
+
+        //            // 🟡 STEP 3: Load staff availability
+        //            var availabilityQuery = "SELECT staff_code, day, hour FROM classtimetable";
+        //            using var staffCmd = new NpgsqlCommand(availabilityQuery, conn);
+        //            using var staffReader = await staffCmd.ExecuteReaderAsync();
+
+        //            while (await staffReader.ReadAsync())
+        //            {
+        //                var staff = staffReader["staff_code"].ToString();
+        //                var day = staffReader["day"].ToString();
+        //                var hour = Convert.ToInt32(staffReader["hour"]);
+
+        //                if (!globalStaffAvailability.ContainsKey(staff))
+        //                {
+        //                    globalStaffAvailability[staff] = new();
+        //                    foreach (var d in new[] { "Mon", "Tue", "Wed", "Thu", "Fri" })
+        //                        globalStaffAvailability[staff][d] = new();
+        //                }
+        //                globalStaffAvailability[staff][day].Add(hour);
+        //            }
+        //            staffReader.Close();
+
+        //            // 🧬 STEP 4: Run GA
+        //            var engine = new TimetableGA.TimetableEngine();
+        //            engine.Initialize(subjects, globalStaffAvailability, labAvailability);
+        //            var (timetable, conflicts, bestChromosome) = engine.GenerateGA();
+
+        //            // 🟢 STEP 5: Insert class timetable
+        //            foreach (var daySlot in timetable)
+        //            {
+        //                foreach (var kv in daySlot.HourlySlots)
+        //                {
+        //                    string value = kv.Value;
+        //                    if (value == "---") continue;
+
+        //                    var hour = kv.Key;
+        //                    var parts = value.Split('(', StringSplitOptions.TrimEntries);
+        //                    string subjectCode = parts[0].Trim();
+
+        //                    var matchedSubject = subjects.FirstOrDefault(s => s.SubjectCode.Trim() == subjectCode);
+        //                    if (matchedSubject == null) continue;
+
+        //                    string fullStaff = matchedSubject.StaffAssigned ?? "---";
+        //                    string staffName = "---", staffId = "---";
+        //                    if (fullStaff.Contains("("))
+        //                    {
+        //                        var nameId = fullStaff.Split('(', StringSplitOptions.TrimEntries);
+        //                        staffName = nameId[0].Trim();
+        //                        staffId = nameId[1].Replace(")", "").Trim();
+        //                    }
+
+        //                    var staffInsertCmd = new NpgsqlCommand(@"
+        //                INSERT INTO classtimetable
+        //                (staff_name, staff_code, department_id, year, semester, section, day, hour, subject_code, subject_name)
+        //                VALUES
+        //                (@staff_name, @staff_id, @department, @year, @semester, @section, @day, @hour, @subject_code, @subject_name);", conn);
+        //                    staffInsertCmd.Parameters.AddWithValue("@staff_name", staffName);
+        //                    staffInsertCmd.Parameters.AddWithValue("@staff_id", staffId);
+        //                    staffInsertCmd.Parameters.AddWithValue("@department", toDepartment);
+        //                    staffInsertCmd.Parameters.AddWithValue("@year", year);
+        //                    staffInsertCmd.Parameters.AddWithValue("@semester", semester);
+        //                    staffInsertCmd.Parameters.AddWithValue("@section", section);
+        //                    staffInsertCmd.Parameters.AddWithValue("@day", daySlot.Day);
+        //                    staffInsertCmd.Parameters.AddWithValue("@hour", hour);
+        //                    staffInsertCmd.Parameters.AddWithValue("@subject_code", subjectCode);
+        //                    staffInsertCmd.Parameters.AddWithValue("@subject_name", matchedSubject.SubjectName);
+        //                    await staffInsertCmd.ExecuteNonQueryAsync();
+        //                }
+        //            }
+
+        //            // 🧪 STEP 6: Insert lab timetable
+        //            foreach (var gene in bestChromosome.Genes)
+        //            {
+        //                if (gene.IsLabBlock && !string.IsNullOrEmpty(gene.LabId))
+        //                {
+        //                    var subject = subjects.FirstOrDefault(s => s.SubjectCode == gene.SubjectCode);
+        //                    if (subject == null) continue;
+
+        //                    for (int h = gene.StartHour; h < gene.StartHour + gene.Duration; h++)
+        //                    {
+        //                        var labInsertCmd = new NpgsqlCommand(@"
+        //                    INSERT INTO labtimetable
+        //                    (lab_id, subject_code, subject_name, staff_name, department, year, semester, section, day, hour)
+        //                    VALUES
+        //                    (@lab_id, @subject_code, @subject_name, @staff_name, @department, @year, @semester, @section, @day, @hour);", conn);
+
+        //                        labInsertCmd.Parameters.AddWithValue("@lab_id", gene.LabId);
+        //                        labInsertCmd.Parameters.AddWithValue("@subject_code", gene.SubjectCode);
+        //                        labInsertCmd.Parameters.AddWithValue("@subject_name", subject.SubjectName);
+        //                        labInsertCmd.Parameters.AddWithValue("@staff_name", gene.StaffAssigned);
+        //                        labInsertCmd.Parameters.AddWithValue("@department", toDepartment);
+        //                        labInsertCmd.Parameters.AddWithValue("@year", year);
+        //                        labInsertCmd.Parameters.AddWithValue("@semester", semester);
+        //                        labInsertCmd.Parameters.AddWithValue("@section", section);
+        //                        labInsertCmd.Parameters.AddWithValue("@day", gene.Day);
+        //                        labInsertCmd.Parameters.AddWithValue("@hour", h);
+        //                        await labInsertCmd.ExecuteNonQueryAsync();
+
+        //                        labTimetable.Add(new
+        //                        {
+        //                            lab_id = gene.LabId,
+        //                            subject_code = gene.SubjectCode,
+        //                            subject_name = subject.SubjectName,
+        //                            staff_assigned = gene.StaffAssigned,
+        //                            department = toDepartment,
+        //                            year,
+        //                            semester,
+        //                            section,
+        //                            day = gene.Day,
+        //                            hour = h
+        //                        });
+        //                    }
+        //                }
+        //            }
+        //            var deleteQuery = @"
+        //DELETE FROM pendingtimetabledata
+        //WHERE LOWER(department) = LOWER(@toDepartment)
+        //  AND LOWER(year) = LOWER(@year)
+        //  AND LOWER(sem) = LOWER(@semester)
+        //  AND LOWER(section) = LOWER(@section)
+        //  AND TRIM(staffname) IS NOT NULL AND TRIM(staffname) <> ''";
+
+        //            using var deleteCmd = new NpgsqlCommand(deleteQuery, conn);
+        //            deleteCmd.Parameters.AddWithValue("@toDepartment", toDepartment.Trim());
+        //            deleteCmd.Parameters.AddWithValue("@year", year.Trim());
+        //            deleteCmd.Parameters.AddWithValue("@semester", semester.Trim());
+        //            deleteCmd.Parameters.AddWithValue("@section", section.Trim());
+
+        //            await deleteCmd.ExecuteNonQueryAsync();
+
+
+        //            // ✅ Done
+        //            return Ok(new
+        //            {
+        //                message = conflicts.Count == 0
+        //                    ? "✅ Timetable generated and stored successfully."
+        //                    : "⚠ Timetable generated with some conflicts. Stored valid entries.",
+        //                timetable,
+        //                labTimetable,
+        //                usedLabIds = subjects.Where(s => !string.IsNullOrEmpty(s.LabId)).Select(s => s.LabId).Distinct().ToList(),
+        //                conflicts = conflicts.Select(c => new
+        //                {
+        //                    subject = c.Subject?.SubjectCode,
+        //                    staff = c.Subject?.StaffAssigned,
+        //                    reason = c.Reason
+        //                })
+        //            });
+        //        }
+        //        catch (Exception ex)
+        //        {
+        //            return StatusCode(500, new
+        //            {
+        //                message = "❌ Internal Server Error while generating timetable.",
+        //                error = ex.Message
+        //            });
+        //        }
+        //    }
+
+       
+
+      
+
+
+        //[HttpPost("generateCrossDepartmentTimetable")]
+        //public async Task<IActionResult> GenerateCrossDepartmentTimetable([FromBody] TimetableRequest request)
+        //{
+        //    var connectionString = _configuration.GetConnectionString("DefaultConnection");
+
+        //    try
+        //    {
+        //        var subjects = new List<TimetableGA.TimetableEngine.Subject>();
+        //        var globalStaffAvailability = new Dictionary<string, Dictionary<string, HashSet<int>>>();
+        //        var labAvailability = new Dictionary<string, Dictionary<string, HashSet<int>>>();
+        //        var labTimetable = new List<object>();
+        //        var backupClassEntries = new List<Dictionary<string, object>>();
+        //        var backupLabEntries = new List<Dictionary<string, object>>();
+
+        //        using var conn = new NpgsqlConnection(connectionString);
+        //        await conn.OpenAsync();
+
+        //        // Build subjects
+        //        foreach (var sub in request.Subjects)
+        //        {
+        //            if (string.IsNullOrWhiteSpace(sub.StaffAssigned)) continue;
+
+        //            subjects.Add(new TimetableGA.TimetableEngine.Subject
+        //            {
+        //                SubjectCode = sub.SubjectCode ?? "---",
+        //                SubjectName = sub.SubjectName ?? "---",
+        //                SubjectType = sub.SubjectType ?? "Theory",
+        //                Credit = sub.Credit,
+        //                StaffAssigned = sub.StaffAssigned,
+        //                LabId = (sub.SubjectType?.ToLower() == "lab" || sub.SubjectType?.ToLower() == "embedded")
+        //                    ? (sub.LabId != null ? sub.LabId.Trim() : null)
+        //                    : null
+        //            });
+        //        }
+
+        //        if (subjects.Count == 0)
+        //        {
+        //            return BadRequest(new
+        //            {
+        //                message = "❌ No valid subjects found. Ensure all have assigned staff.",
+        //                receivedPayload = request
+        //            });
+        //        }
+
+        //        // Load lab availability
+        //        var labAvailabilityQuery = "SELECT * FROM labtimetable";
+        //        using var labCmd = new NpgsqlCommand(labAvailabilityQuery, conn);
+        //        using var labReader = await labCmd.ExecuteReaderAsync();
+
+        //        while (await labReader.ReadAsync())
+        //        {
+        //            var labId = labReader["lab_id"].ToString();
+        //            var day = labReader["day"].ToString();
+        //            var hour = Convert.ToInt32(labReader["hour"]);
+
+        //            if (!labAvailability.ContainsKey(labId))
+        //            {
+        //                labAvailability[labId] = new Dictionary<string, HashSet<int>>();
+        //                foreach (var d in new[] { "Mon", "Tue", "Wed", "Thu", "Fri" })
+        //                    labAvailability[labId][d] = new HashSet<int>();
+        //            }
+        //            labAvailability[labId][day].Add(hour);
+        //        }
+        //        labReader.Close();
+
+        //        // Load staff availability
+        //        var staffQuery = "SELECT * FROM classtimetable";
+        //        using var staffCmd = new NpgsqlCommand(staffQuery, conn);
+        //        using var reader = await staffCmd.ExecuteReaderAsync();
+
+        //        while (await reader.ReadAsync())
+        //        {
+        //            var staff = reader["staff_code"].ToString();
+        //            var day = reader["day"].ToString();
+        //            var hour = Convert.ToInt32(reader["hour"]);
+
+        //            if (!globalStaffAvailability.ContainsKey(staff))
+        //            {
+        //                globalStaffAvailability[staff] = new();
+        //                foreach (var d in new[] { "Mon", "Tue", "Wed", "Thu", "Fri" })
+        //                    globalStaffAvailability[staff][d] = new();
+        //            }
+        //            globalStaffAvailability[staff][day].Add(hour);
+        //        }
+        //        reader.Close();
+
+        //        // Run GA Engine
+        //        var engine = new TimetableGA.TimetableEngine();
+        //        engine.Initialize(subjects, globalStaffAvailability, labAvailability);
+        //        var (timetable, conflicts, bestChromosome) = engine.GenerateGA();
+
+        //        // On conflict, abort
+        //        if (conflicts.Count > 0)
+        //        {
+        //            return BadRequest(new
+        //            {
+        //                message = "❌ Timetable could not be generated without conflicts.",
+        //                conflicts
+        //            });
+        //        }
+
+        //        // Delete old entries only if GA passed
+        //        var deleteClassQuery = "DELETE FROM classtimetable WHERE department_id = @dept AND year = @year AND semester = @sem AND section = @section";
+        //        var deleteLabQuery = "DELETE FROM labtimetable WHERE department = @dept AND year = @year AND semester = @sem AND section = @section";
+
+        //        using (var deleteClassCmd = new NpgsqlCommand(deleteClassQuery, conn))
+        //        {
+        //            deleteClassCmd.Parameters.AddWithValue("@dept", request.ToDepartment);
+        //            deleteClassCmd.Parameters.AddWithValue("@year", request.Year);
+        //            deleteClassCmd.Parameters.AddWithValue("@sem", request.Semester);
+        //            deleteClassCmd.Parameters.AddWithValue("@section", request.Section);
+        //            await deleteClassCmd.ExecuteNonQueryAsync();
+        //        }
+
+        //        using (var deleteLabCmd = new NpgsqlCommand(deleteLabQuery, conn))
+        //        {
+        //            deleteLabCmd.Parameters.AddWithValue("@dept", request.ToDepartment);
+        //            deleteLabCmd.Parameters.AddWithValue("@year", request.Year);
+        //            deleteLabCmd.Parameters.AddWithValue("@sem", request.Semester);
+        //            deleteLabCmd.Parameters.AddWithValue("@section", request.Section);
+        //            await deleteLabCmd.ExecuteNonQueryAsync();
+        //        }
+
+        //        // Insert new timetable
+        //        foreach (var gene in bestChromosome.Genes)
+        //        {
+        //            if (!string.IsNullOrWhiteSpace(gene.LabId))
+        //            {
+        //                var insertLabCmd = new NpgsqlCommand("INSERT INTO labtimetable (lab_id, subject_code, subject_name, staff_name, department, year, semester, section, day, hour) VALUES (@lab_id, @subject_code, @subject_name, @staff_name, @department, @year, @semester, @section, @day, @hour)", conn);
+        //                for (int h = gene.StartHour; h < gene.StartHour + gene.Duration; h++)
+        //                {
+        //                    insertLabCmd.Parameters.Clear();
+        //                    insertLabCmd.Parameters.AddWithValue("@lab_id", gene.LabId);
+        //                    insertLabCmd.Parameters.AddWithValue("@subject_code", gene.SubjectCode);
+        //                    insertLabCmd.Parameters.AddWithValue("@subject_name", "");
+        //                    insertLabCmd.Parameters.AddWithValue("@staff_name", gene.StaffAssigned);
+        //                    insertLabCmd.Parameters.AddWithValue("@department", request.ToDepartment);
+        //                    insertLabCmd.Parameters.AddWithValue("@year", request.Year);
+        //                    insertLabCmd.Parameters.AddWithValue("@semester", request.Semester);
+        //                    insertLabCmd.Parameters.AddWithValue("@section", request.Section);
+        //                    insertLabCmd.Parameters.AddWithValue("@day", gene.Day);
+        //                    insertLabCmd.Parameters.AddWithValue("@hour", h);
+        //                    await insertLabCmd.ExecuteNonQueryAsync();
+        //                }
+        //            }
+        //            else
+        //            {
+        //                var insertClassCmd = new NpgsqlCommand("INSERT INTO classtimetable (staff_name, staff_code, department_id, year, semester, section, day, hour, subject_code, subject_name) VALUES (@staff_name, @staff_code, @department_id, @year, @semester, @section, @day, @hour, @subject_code, @subject_name)", conn);
+        //                for (int h = gene.StartHour; h < gene.StartHour + gene.Duration; h++)
+        //                {
+        //                    insertClassCmd.Parameters.Clear();
+        //                    insertClassCmd.Parameters.AddWithValue("@staff_name", gene.StaffAssigned);
+        //                    insertClassCmd.Parameters.AddWithValue("@staff_code", gene.StaffAssigned);
+        //                    insertClassCmd.Parameters.AddWithValue("@department_id", request.ToDepartment);
+        //                    insertClassCmd.Parameters.AddWithValue("@year", request.Year);
+        //                    insertClassCmd.Parameters.AddWithValue("@semester", request.Semester);
+        //                    insertClassCmd.Parameters.AddWithValue("@section", request.Section);
+        //                    insertClassCmd.Parameters.AddWithValue("@day", gene.Day);
+        //                    insertClassCmd.Parameters.AddWithValue("@hour", h);
+        //                    insertClassCmd.Parameters.AddWithValue("@subject_code", gene.SubjectCode);
+        //                    insertClassCmd.Parameters.AddWithValue("@subject_name", "");
+        //                    await insertClassCmd.ExecuteNonQueryAsync();
+        //                }
+        //            }
+        //        }
+
+        //        return Ok(new
+        //        {
+        //            message = "✅ Hybrid timetable generated successfully.",
+        //            timetable,
+        //            labTimetable,
+        //            usedLabIds = subjects.Where(s => !string.IsNullOrEmpty(s.LabId)).Select(s => s.LabId).Distinct().ToList(),
+        //            receivedPayload = request,
+        //            conflicts
+        //        });
+        //    }
+        //    catch (Exception ex)
+        //    {
+        //        return StatusCode(500, new
+        //        {
+        //            message = "❌ Internal Server Error while generating timetable.",
+        //            error = ex.Message
+        //        });
+        //    }
+        //}
+
+
+
         [HttpPost("generateCrossDepartmentTimetable")]
-        public async Task<IActionResult> GenerateCrossDepartmentTimetable([FromBody] TimetableRequest request)
+        public async Task<IActionResult> GenerateCrossDepartmentTimetableHybrid([FromBody] TimetableRequest request)
         {
             var connectionString = _configuration.GetConnectionString("DefaultConnection");
 
             try
             {
-                var subjects = new List<TimetableEngine.Subject>();
+                var subjects = new List<TimetableGA.TimetableEngine.Subject>();
                 var globalStaffAvailability = new Dictionary<string, Dictionary<string, HashSet<int>>>();
                 var labAvailability = new Dictionary<string, Dictionary<string, HashSet<int>>>();
                 var labTimetable = new List<object>();
-                var debugLogs = new List<string>();
 
                 using var conn = new NpgsqlConnection(connectionString);
                 await conn.OpenAsync();
 
-                // Build subjects list directly from frontend data (no dummy lab ID logic)
+                // Build subjects
                 foreach (var sub in request.Subjects)
                 {
                     if (string.IsNullOrWhiteSpace(sub.StaffAssigned)) continue;
 
-                    debugLogs.Add($"📘 Subject received: {sub.SubjectCode} - {sub.SubjectName} ({sub.SubjectType})");
-
-                    subjects.Add(new TimetableEngine.Subject
+                    subjects.Add(new TimetableGA.TimetableEngine.Subject
                     {
                         SubjectCode = sub.SubjectCode ?? "---",
                         SubjectName = sub.SubjectName ?? "---",
                         SubjectType = sub.SubjectType ?? "Theory",
                         Credit = sub.Credit,
                         StaffAssigned = sub.StaffAssigned,
-                        LabId = sub.SubjectType?.ToLower() == "lab" ? sub.LabId?.Trim() : null
+                        LabId = (sub.SubjectType?.ToLower() == "lab" || sub.SubjectType?.ToLower() == "embedded")
+                            ? (sub.LabId != null ? sub.LabId.Trim() : null)
+                            : null
                     });
                 }
 
@@ -854,32 +1600,56 @@ ORDER BY
                     });
                 }
 
-                // Load Staff Availability
-                var availabilityQuery = "SELECT staff_assigned, day, hour FROM cross_class_timetable";
-                using var existingCmd = new NpgsqlCommand(availabilityQuery, conn);
-                using var reader = await existingCmd.ExecuteReaderAsync();
-
-                while (await reader.ReadAsync())
+                // Load current lab availability
+                var labAvailabilityQuery = "SELECT lab_id, day, hour FROM labtimetable";
+                using (var labCmd = new NpgsqlCommand(labAvailabilityQuery, conn))
+                using (var labReader = await labCmd.ExecuteReaderAsync())
                 {
-                    var staff = reader["staff_assigned"].ToString();
-                    var day = reader["day"].ToString();
-                    var hour = Convert.ToInt32(reader["hour"]);
-
-                    if (!globalStaffAvailability.ContainsKey(staff))
+                    while (await labReader.ReadAsync())
                     {
-                        globalStaffAvailability[staff] = new();
-                        foreach (var d in new[] { "Mon", "Tue", "Wed", "Thu", "Fri" })
-                            globalStaffAvailability[staff][d] = new();
+                        var labId = labReader["lab_id"].ToString();
+                        var day = labReader["day"].ToString();
+                        var hour = Convert.ToInt32(labReader["hour"]);
+
+                        if (!labAvailability.ContainsKey(labId))
+                        {
+                            labAvailability[labId] = new Dictionary<string, HashSet<int>>();
+                            foreach (var d in new[] { "Mon", "Tue", "Wed", "Thu", "Fri" })
+                                labAvailability[labId][d] = new HashSet<int>();
+                        }
+                        labAvailability[labId][day].Add(hour);
                     }
-                    globalStaffAvailability[staff][day].Add(hour);
                 }
-                reader.Close();
 
-                // Generate Timetable
-                var engine = new TimetableEngine();
-                var (timetable, conflicts) = engine.Generate(subjects, globalStaffAvailability, labAvailability);
+                // Load current staff availability
+                var availabilityQuery = "SELECT staff_code, day, hour FROM classtimetable";
+                using (var staffCmd = new NpgsqlCommand(availabilityQuery, conn))
+                using (var reader = await staffCmd.ExecuteReaderAsync())
+                {
+                    while (await reader.ReadAsync())
+                    {
+                        var staff = reader["staff_code"].ToString();
+                        var day = reader["day"].ToString();
+                        var hour = Convert.ToInt32(reader["hour"]);
 
-                // Insert timetable entries
+                        if (!globalStaffAvailability.ContainsKey(staff))
+                        {
+                            globalStaffAvailability[staff] = new();
+                            foreach (var d in new[] { "Mon", "Tue", "Wed", "Thu", "Fri" })
+                                globalStaffAvailability[staff][d] = new();
+                        }
+                        globalStaffAvailability[staff][day].Add(hour);
+                    }
+                }
+
+                // 1. Run GA to generate new timetable
+                var engine = new TimetableGA.TimetableEngine();
+                engine.Initialize(subjects, globalStaffAvailability, labAvailability);
+                var (timetable, conflicts, bestChromosome) = engine.GenerateGA();
+
+                // 2. COLLECT new INSERTS as rows to be inserted
+                var newClassRows = new List<(string staffName, string staffId, TimetableGA.TimetableEngine.Subject subj, string day, int hour)>();
+
                 foreach (var daySlot in timetable)
                 {
                     foreach (var kv in daySlot.HourlySlots)
@@ -888,115 +1658,302 @@ ORDER BY
                         if (value == "---") continue;
 
                         var hour = kv.Key;
-                        var parts = value.Split("(", StringSplitOptions.TrimEntries);
+                        var parts = value.Split('(', StringSplitOptions.TrimEntries);
                         string subjectCode = parts[0].Trim();
-                        string rawStaffId = parts.Length > 1 ? parts[1].Replace(")", "").Trim() : "---";
 
                         var matchedSubject = subjects.FirstOrDefault(s => s.SubjectCode.Trim() == subjectCode);
-                        string fullStaff = matchedSubject?.StaffAssigned ?? "---";
+                        if (matchedSubject == null) continue;
 
+                        string fullStaff = matchedSubject.StaffAssigned ?? "---";
                         string staffName = "---", staffId = "---";
                         if (fullStaff.Contains("("))
                         {
-                            var nameId = fullStaff.Split("(", StringSplitOptions.TrimEntries);
+                            var nameId = fullStaff.Split('(', StringSplitOptions.TrimEntries);
                             staffName = nameId[0].Trim();
                             staffId = nameId[1].Replace(")", "").Trim();
                         }
 
-                        // Insert into cross_class_timetable
-                        var insertCmd = new NpgsqlCommand(@"
-                    INSERT INTO cross_class_timetable 
-                    (from_department, to_department, year, semester, section, day, hour, subject_code, staff_assigned)
-                    VALUES (@from_department, @to_department, @year, @semester, @section, @day, @hour, @subject_code, @staff_assigned);", conn);
+                        newClassRows.Add((staffName, staffId, matchedSubject, daySlot.Day, hour));
+                    }
+                }
 
-                        insertCmd.Parameters.AddWithValue("@from_department", request.Department);
-                        insertCmd.Parameters.AddWithValue("@to_department", request.Department);
-                        insertCmd.Parameters.AddWithValue("@year", request.Year);
-                        insertCmd.Parameters.AddWithValue("@semester", request.Semester);
-                        insertCmd.Parameters.AddWithValue("@section", request.Section);
-                        insertCmd.Parameters.AddWithValue("@day", daySlot.Day);
-                        insertCmd.Parameters.AddWithValue("@hour", hour);
-                        insertCmd.Parameters.AddWithValue("@subject_code", subjectCode);
-                        insertCmd.Parameters.AddWithValue("@staff_assigned", rawStaffId);
-                        await insertCmd.ExecuteNonQueryAsync();
+                // 3. COLLECT new LAB INSERTS as rows to be inserted
+                var newLabRows = new List<(string labId, TimetableGA.TimetableEngine.Subject subj, string staffAssigned, string day, int hour)>();
+                foreach (var gene in bestChromosome.Genes)
+                {
+                    if (gene.IsLabBlock && !string.IsNullOrEmpty(gene.LabId))
+                    {
+                        var subject = subjects.FirstOrDefault(s => s.SubjectCode == gene.SubjectCode);
+                        if (subject == null) continue;
 
-                        // Insert into staff_timetable
-                        var staffInsertCmd = new NpgsqlCommand(@"
-                    INSERT INTO staff_timetable
-                    (staff_name, staff_id, department, year, semester, section, day, hour, subject_code, subject_name)
-                    VALUES
-                    (@staff_name, @staff_id, @department, @year, @semester, @section, @day, @hour, @subject_code, @subject_name);", conn);
-
-                        staffInsertCmd.Parameters.AddWithValue("@staff_name", staffName);
-                        staffInsertCmd.Parameters.AddWithValue("@staff_id", staffId);
-                        staffInsertCmd.Parameters.AddWithValue("@department", request.Department);
-                        staffInsertCmd.Parameters.AddWithValue("@year", request.Year);
-                        staffInsertCmd.Parameters.AddWithValue("@semester", request.Semester);
-                        staffInsertCmd.Parameters.AddWithValue("@section", request.Section);
-                        staffInsertCmd.Parameters.AddWithValue("@day", daySlot.Day);
-                        staffInsertCmd.Parameters.AddWithValue("@hour", hour);
-                        staffInsertCmd.Parameters.AddWithValue("@subject_code", subjectCode);
-                        staffInsertCmd.Parameters.AddWithValue("@subject_name", matchedSubject?.SubjectName ?? "---");
-                        await staffInsertCmd.ExecuteNonQueryAsync();
-
-                        // Lab entry
-                        if (matchedSubject?.SubjectType?.Trim().ToLower() == "lab" && !string.IsNullOrEmpty(matchedSubject.LabId))
+                        for (int h = gene.StartHour; h < gene.StartHour + gene.Duration; h++)
                         {
-                            var labInsertCmd = new NpgsqlCommand(@"
-                        INSERT INTO lab_timetable
-                        (lab_id, subject_code, subject_name, staff_assigned, department, year, semester, section, day, hour)
-                        VALUES
-                        (@lab_id, @subject_code, @subject_name, @staff_assigned, @department, @year, @semester, @section, @day, @hour);", conn);
-
-                            labInsertCmd.Parameters.AddWithValue("@lab_id", matchedSubject.LabId);
-                            labInsertCmd.Parameters.AddWithValue("@subject_code", matchedSubject.SubjectCode);
-                            labInsertCmd.Parameters.AddWithValue("@subject_name", matchedSubject.SubjectName);
-                            labInsertCmd.Parameters.AddWithValue("@staff_assigned", matchedSubject.StaffAssigned);
-                            labInsertCmd.Parameters.AddWithValue("@department", request.Department);
-                            labInsertCmd.Parameters.AddWithValue("@year", request.Year);
-                            labInsertCmd.Parameters.AddWithValue("@semester", request.Semester);
-                            labInsertCmd.Parameters.AddWithValue("@section", request.Section);
-                            labInsertCmd.Parameters.AddWithValue("@day", daySlot.Day);
-                            labInsertCmd.Parameters.AddWithValue("@hour", hour);
-                            await labInsertCmd.ExecuteNonQueryAsync();
-
-                            labTimetable.Add(new
-                            {
-                                lab_id = matchedSubject.LabId,
-                                subject_code = matchedSubject.SubjectCode,
-                                subject_name = matchedSubject.SubjectName,
-                                staff_assigned = matchedSubject.StaffAssigned,
-                                department = request.Department,
-                                year = request.Year,
-                                semester = request.Semester,
-                                section = request.Section,
-                                day = daySlot.Day,
-                                hour = hour
-                            });
+                            newLabRows.Add((gene.LabId, subject, gene.StaffAssigned, gene.Day, h));
                         }
                     }
                 }
 
+                // 4. CHECK FOR CONFLICTS WITH EXISTING DB
+
+                // -- Find all classtimetable and labtimetable rows that would conflict
+                var conflictingClassRows = new List<int>(); // Store IDs of conflicting class timetable rows
+                var conflictingLabRows = new List<int>();   // Store IDs of conflicting lab timetable rows
+
+                // Conflict check for class timetable
+                foreach (var row in newClassRows)
+                {
+                    var cmdTxt = @"
+                SELECT id FROM classtimetable
+                WHERE staff_code = @staff_code AND day = @day AND hour = @hour";
+                    using var cmd = new NpgsqlCommand(cmdTxt, conn);
+                    cmd.Parameters.AddWithValue("@staff_code", row.staffId);
+                    cmd.Parameters.AddWithValue("@day", row.day);
+                    cmd.Parameters.AddWithValue("@hour", row.hour);
+
+                    using var rdr = await cmd.ExecuteReaderAsync();
+                    while (await rdr.ReadAsync())
+                    {
+                        conflictingClassRows.Add(rdr.GetInt32(0));
+                    }
+                    rdr.Close();
+                }
+
+                // Conflict check for lab timetable
+                foreach (var row in newLabRows)
+                {
+                    var cmdTxt = @"
+                SELECT id FROM labtimetable
+                WHERE lab_id = @lab_id AND day = @day AND hour = @hour";
+                    using var cmd = new NpgsqlCommand(cmdTxt, conn);
+                    cmd.Parameters.AddWithValue("@lab_id", row.labId);
+                    cmd.Parameters.AddWithValue("@day", row.day);
+                    cmd.Parameters.AddWithValue("@hour", row.hour);
+
+                    using var rdr = await cmd.ExecuteReaderAsync();
+                    while (await rdr.ReadAsync())
+                    {
+                        conflictingLabRows.Add(rdr.GetInt32(0));
+                    }
+                    rdr.Close();
+                }
+
+                // Backup and delete conflicting class timetable rows
+                List<object> backupClassRows = new();
+                foreach (var rowId in conflictingClassRows.Distinct())
+                {
+                    // Backup to _backup table
+                    var backupCmd = new NpgsqlCommand(
+                        @"INSERT INTO classtimetable_backup SELECT * FROM classtimetable WHERE id=@id", conn);
+                    backupCmd.Parameters.AddWithValue("@id", rowId);
+                    await backupCmd.ExecuteNonQueryAsync();
+
+                    // Read for rescheduling
+                    var selCmd = new NpgsqlCommand(
+                        @"SELECT * FROM classtimetable WHERE id=@id", conn);
+                    selCmd.Parameters.AddWithValue("@id", rowId);
+
+                    using var rdr = await selCmd.ExecuteReaderAsync();
+                    if (await rdr.ReadAsync())
+                    {
+                        // Keep minimal info necessary for rescheduling
+                        backupClassRows.Add(new
+                        {
+                            staff_name = rdr["staff_name"].ToString(),
+                            staff_code = rdr["staff_code"].ToString(),
+                            department_id = rdr["department_id"].ToString(),
+                            year = rdr["year"].ToString(),
+                            semester = rdr["semester"].ToString(),
+                            section = rdr["section"].ToString(),
+                            day = rdr["day"].ToString(),
+                            hour = Convert.ToInt32(rdr["hour"]),
+                            subject_code = rdr["subject_code"].ToString(),
+                            subject_name = rdr["subject_name"].ToString()
+                        });
+                    }
+                    rdr.Close();
+
+                    // Delete
+                    var delCmd = new NpgsqlCommand(
+                        @"DELETE FROM classtimetable WHERE id=@id", conn);
+                    delCmd.Parameters.AddWithValue("@id", rowId);
+                    await delCmd.ExecuteNonQueryAsync();
+                }
+
+                // Backup and delete conflicting lab timetable rows
+                List<object> backupLabRows = new();
+                foreach (var rowId in conflictingLabRows.Distinct())
+                {
+                    // Backup to _backup table
+                    var backupCmd = new NpgsqlCommand(
+                        @"INSERT INTO labtimetable_backup SELECT * FROM labtimetable WHERE id=@id", conn);
+                    backupCmd.Parameters.AddWithValue("@id", rowId);
+                    await backupCmd.ExecuteNonQueryAsync();
+
+                    // Read for rescheduling
+                    var selCmd = new NpgsqlCommand(
+                        @"SELECT * FROM labtimetable WHERE id=@id", conn);
+                    selCmd.Parameters.AddWithValue("@id", rowId);
+                    using var rdr = await selCmd.ExecuteReaderAsync();
+                    if (await rdr.ReadAsync())
+                    {
+                        backupLabRows.Add(new
+                        {
+                            lab_id = rdr["lab_id"].ToString(),
+                            subject_code = rdr["subject_code"].ToString(),
+                            subject_name = rdr["subject_name"].ToString(),
+                            staff_name = rdr["staff_name"].ToString(),
+                            department = rdr["department"].ToString(),
+                            year = rdr["year"].ToString(),
+                            semester = rdr["semester"].ToString(),
+                            section = rdr["section"].ToString(),
+                            day = rdr["day"].ToString(),
+                            hour = Convert.ToInt32(rdr["hour"])
+                        });
+                    }
+                    rdr.Close();
+
+                    // Delete
+                    var delCmd = new NpgsqlCommand(
+                        @"DELETE FROM labtimetable WHERE id=@id", conn);
+                    delCmd.Parameters.AddWithValue("@id", rowId);
+                    await delCmd.ExecuteNonQueryAsync();
+                }
+
+                // Now insert new rows
+                foreach (var (staffName, staffId, matchedSubject, day, hour) in newClassRows)
+                {
+                    var staffInsertCmd = new NpgsqlCommand(@"
+                INSERT INTO classtimetable
+                (staff_name, staff_code, department_id, year, semester, section, day, hour, subject_code, subject_name)
+                VALUES
+                (@staff_name, @staff_id, @department, @year, @semester, @section, @day, @hour, @subject_code, @subject_name);", conn);
+                    staffInsertCmd.Parameters.AddWithValue("@staff_name", staffName);
+                    staffInsertCmd.Parameters.AddWithValue("@staff_id", staffId);
+                    staffInsertCmd.Parameters.AddWithValue("@department", request.Department);
+                    staffInsertCmd.Parameters.AddWithValue("@year", request.Year);
+                    staffInsertCmd.Parameters.AddWithValue("@semester", request.Semester);
+                    staffInsertCmd.Parameters.AddWithValue("@section", request.Section);
+                    staffInsertCmd.Parameters.AddWithValue("@day", day);
+                    staffInsertCmd.Parameters.AddWithValue("@hour", hour);
+                    staffInsertCmd.Parameters.AddWithValue("@subject_code", matchedSubject.SubjectCode);
+                    staffInsertCmd.Parameters.AddWithValue("@subject_name", matchedSubject.SubjectName);
+                    await staffInsertCmd.ExecuteNonQueryAsync();
+                }
+
+                foreach (var (labId, subject, staffAssigned, day, hour) in newLabRows)
+                {
+                    var labInsertCmd = new NpgsqlCommand(@"
+                INSERT INTO labtimetable
+                (lab_id, subject_code, subject_name, staff_name, department, year, semester, section, day, hour)
+                VALUES
+                (@lab_id, @subject_code, @subject_name, @staff_name, @department, @year, @semester, @section, @day, @hour);", conn);
+
+                    labInsertCmd.Parameters.AddWithValue("@lab_id", labId);
+                    labInsertCmd.Parameters.AddWithValue("@subject_code", subject.SubjectCode);
+                    labInsertCmd.Parameters.AddWithValue("@subject_name", subject.SubjectName);
+                    labInsertCmd.Parameters.AddWithValue("@staff_name", staffAssigned ?? "---");
+                    labInsertCmd.Parameters.AddWithValue("@department", request.Department);
+                    labInsertCmd.Parameters.AddWithValue("@year", request.Year);
+                    labInsertCmd.Parameters.AddWithValue("@semester", request.Semester);
+                    labInsertCmd.Parameters.AddWithValue("@section", request.Section);
+                    labInsertCmd.Parameters.AddWithValue("@day", day);
+                    labInsertCmd.Parameters.AddWithValue("@hour", hour);
+                    await labInsertCmd.ExecuteNonQueryAsync();
+
+                    labTimetable.Add(new
+                    {
+                        lab_id = labId,
+                        subject_code = subject.SubjectCode,
+                        subject_name = subject.SubjectName,
+                        staff_assigned = staffAssigned,
+                        department = request.Department,
+                        year = request.Year,
+                        semester = request.Semester,
+                        section = request.Section,
+                        day = day,
+                        hour = hour
+                    });
+                }
+
+                // Try to reschedule backup class rows (if any) by running GA, now including the current timetable constraints!
+                var unscheduledClassRows = new List<object>();
+                if (backupClassRows.Count > 0)
+                {
+                    // For each class backup, try to find a new slot using the current GA availability
+                    foreach (var entry in backupClassRows)
+                    {
+                        // Build a 'subject' for GA
+                        var backupSubject = new TimetableGA.TimetableEngine.Subject
+                        {
+                            SubjectCode = (string)entry.GetType().GetProperty("subject_code").GetValue(entry),
+                            SubjectName = (string)entry.GetType().GetProperty("subject_name").GetValue(entry),
+                            Credit = 1,
+                            StaffAssigned = (string)entry.GetType().GetProperty("staff_code").GetValue(entry),
+                            SubjectType = "Theory" // for backup class timetable, you may want to customize if needed
+                        };
+
+                        // Prepare limited subject and availability for this entry
+                        var singleSubList = new List<TimetableGA.TimetableEngine.Subject> { backupSubject };
+                        var singleStaffAvail = await LoadAvailabilityForStaff(backupSubject.StaffAssigned, conn);
+
+                        var ga = new TimetableGA.TimetableEngine();
+                        ga.Initialize(singleSubList, singleStaffAvail, new Dictionary<string, Dictionary<string, HashSet<int>>>());
+                        var (tt, conflicts2, chrom) = ga.GenerateGA();
+
+                        if (conflicts2.Count == 0)
+                        {
+                            // insert
+                            foreach (var slot in tt)
+                            {
+                                foreach (var kv in slot.HourlySlots)
+                                {
+                                    if (kv.Value == "---") continue;
+                                    var cmd2 = new NpgsqlCommand(@"
+                                INSERT INTO classtimetable
+                                (staff_name, staff_code, department_id, year, semester, section, day, hour, subject_code, subject_name)
+                                VALUES
+                                (@staff_name, @staff_code, @department_id, @year, @semester, @section, @day, @hour, @subject_code, @subject_name);", conn);
+                                    cmd2.Parameters.AddWithValue("@staff_name", entry.GetType().GetProperty("staff_name").GetValue(entry));
+                                    cmd2.Parameters.AddWithValue("@staff_code", entry.GetType().GetProperty("staff_code").GetValue(entry));
+                                    cmd2.Parameters.AddWithValue("@department_id", entry.GetType().GetProperty("department_id").GetValue(entry));
+                                    cmd2.Parameters.AddWithValue("@year", entry.GetType().GetProperty("year").GetValue(entry));
+                                    cmd2.Parameters.AddWithValue("@semester", entry.GetType().GetProperty("semester").GetValue(entry));
+                                    cmd2.Parameters.AddWithValue("@section", entry.GetType().GetProperty("section").GetValue(entry));
+                                    cmd2.Parameters.AddWithValue("@day", slot.Day);
+                                    cmd2.Parameters.AddWithValue("@hour", kv.Key);
+                                    cmd2.Parameters.AddWithValue("@subject_code", backupSubject.SubjectCode);
+                                    cmd2.Parameters.AddWithValue("@subject_name", backupSubject.SubjectName);
+                                    await cmd2.ExecuteNonQueryAsync();
+                                }
+                            }
+                        }
+                        else
+                        {
+                            unscheduledClassRows.Add(entry);
+                        }
+                    }
+                }
+
+                // The same pattern can be used for backupLabRows if needed
+
                 return Ok(new
                 {
-                    message = conflicts.Count == 0
-          ? "✅ Timetable generated and stored successfully."
-          : "⚠ Timetable generated with some conflicts. Stored valid entries.",
+                    message = conflicts.Count == 0 && unscheduledClassRows.Count == 0
+                        ? "✅ Hybrid Timetable generated and stored successfully; all conflicts resolved."
+                        : "⚠ Hybrid Timetable generated with some unsolved/conflicting cases. Some original class/lab slots could not be rescheduled.",
                     timetable,
                     labTimetable,
-                    usedLabIds = subjects
-          .Select(s => s.LabId)
-          .Distinct()
-          .ToList(),
+                    unresolvedClassConflicts = unscheduledClassRows,
+                    // unresolvedLabConflicts = unscheduledLabRows, // to implement as per above
+                    usedLabIds = subjects.Where(s => !string.IsNullOrEmpty(s.LabId)).Select(s => s.LabId).Distinct().ToList(),
                     receivedPayload = request,
                     conflicts = conflicts.Select(c => new
                     {
-                        subject = c.Subject.SubjectCode,
-                        staff = c.Subject.StaffAssigned,
+                        subject = c.Subject?.SubjectCode,
+                        staff = c.Subject?.StaffAssigned,
                         reason = c.Reason
                     })
                 });
-
             }
             catch (Exception ex)
             {
@@ -1010,19 +1967,460 @@ ORDER BY
 
 
 
+        //        [HttpGet("generateCrossDepartmentTimetable")]
+        //        public async Task<IActionResult> GenerateCrossDepartmentTimetable(
+        //               [FromQuery] string toDepartment,
+        //               [FromQuery] string year,
+        //               [FromQuery] string semester,
+        //               [FromQuery] string section)
+        //        {
+        //            var connectionString = _configuration.GetConnectionString("DefaultConnection");
 
+        //            try
+        //            {
+        //                var subjects = new List<TimetableGA.TimetableEngine.Subject>();
+        //                var globalStaffAvailability = new Dictionary<string, Dictionary<string, HashSet<int>>>();
+        //                var labAvailability = new Dictionary<string, Dictionary<string, HashSet<int>>>();
+        //                var labTimetable = new List<object>();
+
+        //                using var conn = new NpgsqlConnection(connectionString);
+        //                await conn.OpenAsync();
+
+        //                // 1. Get subjects from pendingtimetabledata table
+        //                var selectQuery = @"
+        //            SELECT staffname, subject_id, lab_id, staff_department, subject_shrt,
+        //                   credit, subtype, department, year, sem, lab_department, section
+        //            FROM pendingtimetabledata
+        //            WHERE department = @dept AND year = @year AND sem = @sem AND section = @section";
+
+        //                using var cmd = new NpgsqlCommand(selectQuery, conn);
+        //                cmd.Parameters.AddWithValue("@dept", toDepartment);
+        //                cmd.Parameters.AddWithValue("@year", year);
+        //                cmd.Parameters.AddWithValue("@sem", semester);
+        //                cmd.Parameters.AddWithValue("@section", section);
+
+        //                using var reader = await cmd.ExecuteReaderAsync();
+        //                while (await reader.ReadAsync())
+        //                {
+        //                    var staffFull = reader["staffname"].ToString();
+        //                    if (string.IsNullOrWhiteSpace(staffFull)) continue;
+
+        //                    subjects.Add(new TimetableGA.TimetableEngine.Subject
+        //                    {
+        //                        SubjectCode = reader["subject_id"].ToString() ?? "---",
+        //                        SubjectName = reader["subject_shrt"].ToString() ?? "---",
+        //                        SubjectType = reader["subtype"].ToString() ?? "Theory",
+        //                        Credit = Convert.ToInt32(reader["credit"]),
+        //                        StaffAssigned = staffFull,
+        //                        LabId = (reader["subtype"].ToString()?.ToLower() == "lab" ||
+        //                                 reader["subtype"].ToString()?.ToLower() == "embedded")
+        //                                 ? reader["lab_id"]?.ToString()?.Trim()
+        //                                 : null
+        //                    });
+        //                }
+        //                reader.Close();
+
+        //                if (subjects.Count == 0)
+        //                {
+        //                    return BadRequest(new
+        //                    {
+        //                        message = "❌ No valid subjects found in pendingtimetabledata.",
+        //                        receivedPayload = new { toDepartment, year, semester, section }
+        //                    });
+        //                }
+
+        //                // Load current lab availability
+        //                var labAvailabilityQuery = "SELECT lab_id, day, hour FROM labtimetable";
+        //                using (var labCmd = new NpgsqlCommand(labAvailabilityQuery, conn))
+        //                using (var labReader = await labCmd.ExecuteReaderAsync())
+        //                {
+        //                    while (await labReader.ReadAsync())
+        //                    {
+        //                        var labId = labReader["lab_id"].ToString();
+        //                        var day = labReader["day"].ToString();
+        //                        var hour = Convert.ToInt32(labReader["hour"]);
+
+        //                        if (!labAvailability.ContainsKey(labId))
+        //                        {
+        //                            labAvailability[labId] = new Dictionary<string, HashSet<int>>();
+        //                            foreach (var d in new[] { "Mon", "Tue", "Wed", "Thu", "Fri" })
+        //                                labAvailability[labId][d] = new HashSet<int>();
+        //                        }
+        //                        labAvailability[labId][day].Add(hour);
+        //                    }
+        //                }
+
+        //                // Load current staff availability
+        //                var availabilityQuery = "SELECT staff_code, day, hour FROM classtimetable";
+        //                using (var staffCmd = new NpgsqlCommand(availabilityQuery, conn))
+        //                using (var staffReader = await staffCmd.ExecuteReaderAsync())
+        //                {
+        //                    while (await staffReader.ReadAsync())
+        //                    {
+        //                        var staff = staffReader["staff_code"].ToString();
+        //                        var day = staffReader["day"].ToString();
+        //                        var hour = Convert.ToInt32(staffReader["hour"]);
+
+        //                        if (!globalStaffAvailability.ContainsKey(staff))
+        //                        {
+        //                            globalStaffAvailability[staff] = new();
+        //                            foreach (var d in new[] { "Mon", "Tue", "Wed", "Thu", "Fri" })
+        //                                globalStaffAvailability[staff][d] = new();
+        //                        }
+        //                        globalStaffAvailability[staff][day].Add(hour);
+        //                    }
+        //                }
+
+        //                // 1. Run GA to generate new timetable
+        //                var engine = new TimetableGA.TimetableEngine();
+        //                engine.Initialize(subjects, globalStaffAvailability, labAvailability);
+        //                var (timetable, conflicts, bestChromosome) = engine.GenerateGA();
+
+        //                // 2. COLLECT new INSERTS as rows to be inserted
+        //                var newClassRows = new List<(string staffName, string staffId, TimetableGA.TimetableEngine.Subject subj, string day, int hour)>();
+
+        //                foreach (var daySlot in timetable)
+        //                {
+        //                    foreach (var kv in daySlot.HourlySlots)
+        //                    {
+        //                        string value = kv.Value;
+        //                        if (value == "---") continue;
+
+        //                        var hour = kv.Key;
+        //                        var parts = value.Split('(', StringSplitOptions.TrimEntries);
+        //                        string subjectCode = parts[0].Trim();
+
+        //                        var matchedSubject = subjects.FirstOrDefault(s => s.SubjectCode.Trim() == subjectCode);
+        //                        if (matchedSubject == null) continue;
+
+        //                        string fullStaff = matchedSubject.StaffAssigned ?? "---";
+        //                        string staffName = "---", staffId = "---";
+        //                        if (fullStaff.Contains("("))
+        //                        {
+        //                            var nameId = fullStaff.Split('(', StringSplitOptions.TrimEntries);
+        //                            staffName = nameId[0].Trim();
+        //                            staffId = nameId[1].Replace(")", "").Trim();
+        //                        }
+        //                        else
+        //                        {
+        //                            staffName = fullStaff.Trim();
+        //                            staffId = "---";
+        //                        }
+
+        //                        newClassRows.Add((staffName, staffId, matchedSubject, daySlot.Day, hour));
+        //                    }
+        //                }
+
+        //                // 3. COLLECT new LAB INSERTS as rows to be inserted
+        //                var newLabRows = new List<(string labId, TimetableGA.TimetableEngine.Subject subj, string staffAssigned, string day, int hour)>();
+        //                foreach (var gene in bestChromosome.Genes)
+        //                {
+        //                    if (gene.IsLabBlock && !string.IsNullOrEmpty(gene.LabId))
+        //                    {
+        //                        var subject = subjects.FirstOrDefault(s => s.SubjectCode == gene.SubjectCode);
+        //                        if (subject == null) continue;
+
+        //                        for (int h = gene.StartHour; h < gene.StartHour + gene.Duration; h++)
+        //                        {
+        //                            newLabRows.Add((gene.LabId, subject, gene.StaffAssigned, gene.Day, h));
+        //                        }
+        //                    }
+        //                }
+
+        //                // 4. CHECK FOR CONFLICTS WITH EXISTING DB
+
+        //                // -- Find all classtimetable and labtimetable rows that would conflict
+        //                var conflictingClassRows = new List<int>(); // Store IDs of conflicting class timetable rows
+        //                var conflictingLabRows = new List<int>();   // Store IDs of conflicting lab timetable rows
+
+        //                // Conflict check for class timetable
+        //                foreach (var row in newClassRows)
+        //                {
+        //                    var cmdTxt = @"
+        //                SELECT id FROM classtimetable
+        //                WHERE staff_code = @staff_code AND day = @day AND hour = @hour";
+        //                    using var conflictCmd = new NpgsqlCommand(cmdTxt, conn);
+        //                    conflictCmd.Parameters.AddWithValue("@staff_code", row.staffId);
+        //                    conflictCmd.Parameters.AddWithValue("@day", row.day);
+        //                    conflictCmd.Parameters.AddWithValue("@hour", row.hour);
+
+        //                    using var rdr = await conflictCmd.ExecuteReaderAsync();
+        //                    while (await rdr.ReadAsync())
+        //                    {
+        //                        conflictingClassRows.Add(rdr.GetInt32(0));
+        //                    }
+        //                    rdr.Close();
+        //                }
+
+        //                // Conflict check for lab timetable
+        //                foreach (var row in newLabRows)
+        //                {
+        //                    var cmdTxt = @"
+        //                SELECT id FROM labtimetable
+        //                WHERE lab_id = @lab_id AND day = @day AND hour = @hour";
+        //                    using var conflictCmd = new NpgsqlCommand(cmdTxt, conn);
+        //                    conflictCmd.Parameters.AddWithValue("@lab_id", row.labId);
+        //                    conflictCmd.Parameters.AddWithValue("@day", row.day);
+        //                    conflictCmd.Parameters.AddWithValue("@hour", row.hour);
+
+        //                    using var rdr = await conflictCmd.ExecuteReaderAsync();
+        //                    while (await rdr.ReadAsync())
+        //                    {
+        //                        conflictingLabRows.Add(rdr.GetInt32(0));
+        //                    }
+        //                    rdr.Close();
+        //                }
+
+        //                // Backup and delete conflicting class timetable rows
+        //                List<object> backupClassRows = new();
+        //                foreach (var rowId in conflictingClassRows.Distinct())
+        //                {
+        //                    // Backup to _backup table
+        //                    var backupCmd = new NpgsqlCommand(
+        //                        @"INSERT INTO classtimetable_backup SELECT * FROM classtimetable WHERE id=@id", conn);
+        //                    backupCmd.Parameters.AddWithValue("@id", rowId);
+        //                    await backupCmd.ExecuteNonQueryAsync();
+
+        //                    // Read for rescheduling
+        //                    var selCmd = new NpgsqlCommand(@"SELECT * FROM classtimetable WHERE id=@id", conn);
+        //                    selCmd.Parameters.AddWithValue("@id", rowId);
+
+        //                    using var rdr = await selCmd.ExecuteReaderAsync();
+        //                    if (await rdr.ReadAsync())
+        //                    {
+        //                        backupClassRows.Add(new
+        //                        {
+        //                            staff_name = rdr["staff_name"].ToString(),
+        //                            staff_code = rdr["staff_code"].ToString(),
+        //                            department_id = rdr["department_id"].ToString(),
+        //                            year = rdr["year"].ToString(),
+        //                            semester = rdr["semester"].ToString(),
+        //                            section = rdr["section"].ToString(),
+        //                            day = rdr["day"].ToString(),
+        //                            hour = Convert.ToInt32(rdr["hour"]),
+        //                            subject_code = rdr["subject_code"].ToString(),
+        //                            subject_name = rdr["subject_name"].ToString()
+        //                        });
+        //                    }
+        //                    rdr.Close();
+
+        //                    // Delete
+        //                    var delCmd = new NpgsqlCommand(@"DELETE FROM classtimetable WHERE id=@id", conn);
+        //                    delCmd.Parameters.AddWithValue("@id", rowId);
+        //                    await delCmd.ExecuteNonQueryAsync();
+        //                }
+
+        //                // Backup and delete conflicting lab timetable rows
+        //                List<object> backupLabRows = new();
+        //                foreach (var rowId in conflictingLabRows.Distinct())
+        //                {
+        //                    // Backup to _backup table
+        //                    var backupCmd = new NpgsqlCommand(
+        //                        @"INSERT INTO labtimetable_backup SELECT * FROM labtimetable WHERE id=@id", conn);
+        //                    backupCmd.Parameters.AddWithValue("@id", rowId);
+        //                    await backupCmd.ExecuteNonQueryAsync();
+
+        //                    // Read for rescheduling
+        //                    var selCmd = new NpgsqlCommand(@"SELECT * FROM labtimetable WHERE id=@id", conn);
+        //                    selCmd.Parameters.AddWithValue("@id", rowId);
+        //                    using var rdr = await selCmd.ExecuteReaderAsync();
+        //                    if (await rdr.ReadAsync())
+        //                    {
+        //                        backupLabRows.Add(new
+        //                        {
+        //                            lab_id = rdr["lab_id"].ToString(),
+        //                            subject_code = rdr["subject_code"].ToString(),
+        //                            subject_name = rdr["subject_name"].ToString(),
+        //                            staff_name = rdr["staff_name"].ToString(),
+        //                            department = rdr["department"].ToString(),
+        //                            year = rdr["year"].ToString(),
+        //                            semester = rdr["semester"].ToString(),
+        //                            section = rdr["section"].ToString(),
+        //                            day = rdr["day"].ToString(),
+        //                            hour = Convert.ToInt32(rdr["hour"])
+        //                        });
+        //                    }
+        //                    rdr.Close();
+
+        //                    // Delete
+        //                    var delCmd = new NpgsqlCommand(@"DELETE FROM labtimetable WHERE id=@id", conn);
+        //                    delCmd.Parameters.AddWithValue("@id", rowId);
+        //                    await delCmd.ExecuteNonQueryAsync();
+        //                }
+
+        //                // Now insert new rows
+        //                foreach (var (staffName, staffId, matchedSubject, day, hour) in newClassRows)
+        //                {
+        //                    var staffInsertCmd = new NpgsqlCommand(@"
+        //                INSERT INTO classtimetable
+        //                (staff_name, staff_code, department_id, year, semester, section, day, hour, subject_code, subject_name)
+        //                VALUES
+        //                (@staff_name, @staff_id, @department, @year, @semester, @section, @day, @hour, @subject_code, @subject_name);", conn);
+        //                    staffInsertCmd.Parameters.AddWithValue("@staff_name", staffName);
+        //                    staffInsertCmd.Parameters.AddWithValue("@staff_id", staffId);
+        //                    staffInsertCmd.Parameters.AddWithValue("@department", toDepartment);
+        //                    staffInsertCmd.Parameters.AddWithValue("@year", year);
+        //                    staffInsertCmd.Parameters.AddWithValue("@semester", semester);
+        //                    staffInsertCmd.Parameters.AddWithValue("@section", section);
+        //                    staffInsertCmd.Parameters.AddWithValue("@day", day);
+        //                    staffInsertCmd.Parameters.AddWithValue("@hour", hour);
+        //                    staffInsertCmd.Parameters.AddWithValue("@subject_code", matchedSubject.SubjectCode);
+        //                    staffInsertCmd.Parameters.AddWithValue("@subject_name", matchedSubject.SubjectName);
+        //                    await staffInsertCmd.ExecuteNonQueryAsync();
+        //                }
+
+        //                foreach (var (labId, subject, staffAssigned, day, hour) in newLabRows)
+        //                {
+        //                    var labInsertCmd = new NpgsqlCommand(@"
+        //                INSERT INTO labtimetable
+        //                (lab_id, subject_code, subject_name, staff_name, department, year, semester, section, day, hour)
+        //                VALUES
+        //                (@lab_id, @subject_code, @subject_name, @staff_name, @department, @year, @semester, @section, @day, @hour);", conn);
+
+        //                    labInsertCmd.Parameters.AddWithValue("@lab_id", labId);
+        //                    labInsertCmd.Parameters.AddWithValue("@subject_code", subject.SubjectCode);
+        //                    labInsertCmd.Parameters.AddWithValue("@subject_name", subject.SubjectName);
+        //                    labInsertCmd.Parameters.AddWithValue("@staff_name", staffAssigned ?? "---");
+        //                    labInsertCmd.Parameters.AddWithValue("@department", toDepartment);
+        //                    labInsertCmd.Parameters.AddWithValue("@year", year);
+        //                    labInsertCmd.Parameters.AddWithValue("@semester", semester);
+        //                    labInsertCmd.Parameters.AddWithValue("@section", section);
+        //                    labInsertCmd.Parameters.AddWithValue("@day", day);
+        //                    labInsertCmd.Parameters.AddWithValue("@hour", hour);
+        //                    await labInsertCmd.ExecuteNonQueryAsync();
+
+        //                    labTimetable.Add(new
+        //                    {
+        //                        lab_id = labId,
+        //                        subject_code = subject.SubjectCode,
+        //                        subject_name = subject.SubjectName,
+        //                        staff_assigned = staffAssigned,
+        //                        department = toDepartment,
+        //                        year = year,
+        //                        semester = semester,
+        //                        section = section,
+        //                        day = day,
+        //                        hour = hour
+        //                    });
+        //                }
+
+        //                // Try to reschedule backup class rows (if any) by running GA, now including the current timetable constraints!
+        //                var unscheduledClassRows = new List<object>();
+        //                if (backupClassRows.Count > 0)
+        //                {
+        //                    foreach (var entry in backupClassRows)
+        //                    {
+        //                        // Build a 'subject' for GA
+        //                        var backupSubject = new TimetableGA.TimetableEngine.Subject
+        //                        {
+        //                            SubjectCode = (string)entry.GetType().GetProperty("subject_code").GetValue(entry),
+        //                            SubjectName = (string)entry.GetType().GetProperty("subject_name").GetValue(entry),
+        //                            Credit = 1,
+        //                            StaffAssigned = (string)entry.GetType().GetProperty("staff_code").GetValue(entry),
+        //                            SubjectType = "Theory" // for backup class timetable, you may want to customize if needed
+        //                        };
+
+        //                        // Prepare limited subject and availability for this entry
+        //                        var singleSubList = new List<TimetableGA.TimetableEngine.Subject> { backupSubject };
+        //                        var singleStaffAvail = await LoadAvailabilityForStaff(backupSubject.StaffAssigned, conn);
+
+        //                        var ga = new TimetableGA.TimetableEngine();
+        //                        ga.Initialize(singleSubList, singleStaffAvail, new Dictionary<string, Dictionary<string, HashSet<int>>>());
+        //                        var (tt, conflicts2, chrom) = ga.GenerateGA();
+
+        //                        if (conflicts2.Count == 0)
+        //                        {
+        //                            // insert
+        //                            foreach (var slot in tt)
+        //                            {
+        //                                foreach (var kv in slot.HourlySlots)
+        //                                {
+        //                                    if (kv.Value == "---") continue;
+        //                                    var cmd2 = new NpgsqlCommand(@"
+        //                                INSERT INTO classtimetable
+        //                                (staff_name, staff_code, department_id, year, semester, section, day, hour, subject_code, subject_name)
+        //                                VALUES
+        //                                (@staff_name, @staff_code, @department_id, @year, @semester, @section, @day, @hour, @subject_code, @subject_name);", conn);
+        //                                    cmd2.Parameters.AddWithValue("@staff_name", entry.GetType().GetProperty("staff_name").GetValue(entry));
+        //                                    cmd2.Parameters.AddWithValue("@staff_code", entry.GetType().GetProperty("staff_code").GetValue(entry));
+        //                                    cmd2.Parameters.AddWithValue("@department_id", entry.GetType().GetProperty("department_id").GetValue(entry));
+        //                                    cmd2.Parameters.AddWithValue("@year", entry.GetType().GetProperty("year").GetValue(entry));
+        //                                    cmd2.Parameters.AddWithValue("@semester", entry.GetType().GetProperty("semester").GetValue(entry));
+        //                                    cmd2.Parameters.AddWithValue("@section", entry.GetType().GetProperty("section").GetValue(entry));
+        //                                    cmd2.Parameters.AddWithValue("@day", slot.Day);
+        //                                    cmd2.Parameters.AddWithValue("@hour", kv.Key);
+        //                                    cmd2.Parameters.AddWithValue("@subject_code", backupSubject.SubjectCode);
+        //                                    cmd2.Parameters.AddWithValue("@subject_name", backupSubject.SubjectName);
+        //                                    await cmd2.ExecuteNonQueryAsync();
+        //                                }
+        //                            }
+        //                        }
+        //                        else
+        //                        {
+        //                            unscheduledClassRows.Add(entry);
+        //                        }
+        //                    }
+        //                }
+        //                var updateQuery = @"
+        //UPDATE pendingtimetabledata
+        //SET status = 'generated'
+        //WHERE LOWER(department) = LOWER(@toDepartment)
+        //  AND LOWER(year) = LOWER(@year)
+        //  AND LOWER(sem) = LOWER(@semester)
+        //  AND LOWER(section) = LOWER(@section)
+        //  AND TRIM(staffname) IS NOT NULL AND TRIM(staffname) <> ''";
+
+        //                using var updateCmd = new NpgsqlCommand(updateQuery, conn);
+        //                updateCmd.Parameters.AddWithValue("@toDepartment", toDepartment.Trim());
+        //                updateCmd.Parameters.AddWithValue("@year", year.Trim());
+        //                updateCmd.Parameters.AddWithValue("@semester", semester.Trim());
+        //                updateCmd.Parameters.AddWithValue("@section", section.Trim());
+
+        //                await updateCmd.ExecuteNonQueryAsync();
+
+
+        //                //  The same pattern can be used for backupLabRows if needed
+
+        //                return Ok(new
+        //                {
+        //                    message = conflicts.Count == 0 && unscheduledClassRows.Count == 0
+        //                        ? "✅ Hybrid Timetable generated and stored successfully; all conflicts resolved."
+        //                        : "⚠ Hybrid Timetable generated with some unsolved/conflicting cases. Some original class/lab slots could not be rescheduled.",
+        //                    timetable,
+        //                    labTimetable,
+        //                    unresolvedClassConflicts = unscheduledClassRows,
+        //                    // unresolvedLabConflicts = unscheduledLabRows, // to implement as per above
+        //                    usedLabIds = subjects.Where(s => !string.IsNullOrEmpty(s.LabId)).Select(s => s.LabId).Distinct().ToList(),
+        //                    receivedPayload = new { toDepartment, year, semester, section },
+        //                    conflicts = conflicts.Select(c => new
+        //                    {
+        //                        subject = c.Subject?.SubjectCode,
+        //                        staff = c.Subject?.StaffAssigned,
+        //                        reason = c.Reason
+        //                    })
+        //                });
+        //            }
+        //            catch (Exception ex)
+        //            {
+        //                return StatusCode(500, new
+        //                {
+        //                    message = "❌ Internal Server Error while generating timetable.",
+        //                    error = ex.Message
+        //                });
+        //            }
+        //        }
         [HttpGet("generateCrossDepartmentTimetable")]
         public async Task<IActionResult> GenerateCrossDepartmentTimetable(
-        [FromQuery] string toDepartment,
-        [FromQuery] string year,
-        [FromQuery] string semester,
-        [FromQuery] string section)
+               [FromQuery] string toDepartment,
+               [FromQuery] string year,
+               [FromQuery] string semester,
+               [FromQuery] string section)
         {
             var connectionString = _configuration.GetConnectionString("DefaultConnection");
 
             try
             {
-                var subjects = new List<TimetableEngine.Subject>();
+                var subjects = new List<TimetableGA.TimetableEngine.Subject>();
                 var globalStaffAvailability = new Dictionary<string, Dictionary<string, HashSet<int>>>();
                 var labAvailability = new Dictionary<string, Dictionary<string, HashSet<int>>>();
                 var labTimetable = new List<object>();
@@ -1030,66 +2428,102 @@ ORDER BY
                 using var conn = new NpgsqlConnection(connectionString);
                 await conn.OpenAsync();
 
-                var query = @"
-            SELECT * FROM subject_assignments
-            WHERE LOWER(department) = LOWER(@toDepartment)
-              AND LOWER(year) = LOWER(@year)
-              AND LOWER(semester) = LOWER(@semester)
-              AND LOWER(section) = LOWER(@section)
-              AND staff_assigned IS NOT NULL AND TRIM(staff_assigned) <> ''";
+                // -- SUBJECT LOADING: this is the ONLY part that differs from POST! --
+                // GET: load from pendingtimetabledata using query params
+                var selectQuery = @"
+            SELECT staffname, subject_id, lab_id, staff_department, subject_shrt,
+                   credit, subtype, department, year, sem, lab_department, section
+            FROM pendingtimetabledata
+            WHERE department = @dept AND year = @year AND sem = @sem AND section = @section";
 
-                using var cmd = new NpgsqlCommand(query, conn);
-                cmd.Parameters.AddWithValue("@toDepartment", toDepartment.Trim());
-                cmd.Parameters.AddWithValue("@year", year.Trim());
-                cmd.Parameters.AddWithValue("@semester", semester.Trim());
-                cmd.Parameters.AddWithValue("@section", section.Trim());
-
-                using var reader = await cmd.ExecuteReaderAsync();
-                while (await reader.ReadAsync())
+                using (var cmd = new NpgsqlCommand(selectQuery, conn))
                 {
-                    subjects.Add(new TimetableEngine.Subject
+                    cmd.Parameters.AddWithValue("@dept", toDepartment);
+                    cmd.Parameters.AddWithValue("@year", year);
+                    cmd.Parameters.AddWithValue("@sem", semester);
+                    cmd.Parameters.AddWithValue("@section", section);
+
+                    using var reader = await cmd.ExecuteReaderAsync();
+                    while (await reader.ReadAsync())
                     {
-                        SubjectCode = reader["sub_code"]?.ToString() ?? "---",
-                        SubjectName = reader["subject_name"]?.ToString() ?? "---",
-                        SubjectType = reader["subject_type"]?.ToString() ?? "Theory",
-                        Credit = Convert.ToInt32(reader["credit"]),
-                        StaffAssigned = reader["staff_assigned"]?.ToString() ?? "---",
-                        LabId = reader["lab_id"]?.ToString()
-                    });
+                        var staffFull = reader["staffname"].ToString();
+                        if (string.IsNullOrWhiteSpace(staffFull)) continue;
+
+                        subjects.Add(new TimetableGA.TimetableEngine.Subject
+                        {
+                            SubjectCode = reader["subject_id"].ToString() ?? "---",
+                            SubjectName = reader["subject_shrt"].ToString() ?? "---",
+                            SubjectType = reader["subtype"].ToString() ?? "Theory",
+                            Credit = Convert.ToInt32(reader["credit"]),
+                            StaffAssigned = staffFull,
+                            LabId = (reader["subtype"].ToString()?.ToLower() == "lab" ||
+                                     reader["subtype"].ToString()?.ToLower() == "embedded")
+                                    ? reader["lab_id"]?.ToString()?.Trim()
+                                    : null
+                        });
+                    }
+                    reader.Close();
                 }
-                reader.Close();
+                // -- END OF SUBJECT LOADING --
 
                 if (subjects.Count == 0)
                 {
                     return BadRequest(new
                     {
-                        message = "❌ No valid subjects found. Ensure all have assigned staff.",
-                        debug = new { toDepartment, year, semester, section }
+                        message = "❌ No valid subjects found in pendingtimetabledata.",
+                        receivedPayload = new { toDepartment, year, semester, section }
                     });
                 }
 
-                var availabilityQuery = "SELECT staff_assigned, day, hour FROM cross_class_timetable";
-                using var existingCmd = new NpgsqlCommand(availabilityQuery, conn);
-                using var availabilityReader = await existingCmd.ExecuteReaderAsync();
-                while (await availabilityReader.ReadAsync())
+                // Load current lab availability
+                var labAvailabilityQuery = "SELECT lab_id, day, hour FROM labtimetable";
+                using (var labCmd = new NpgsqlCommand(labAvailabilityQuery, conn))
+                using (var labReader = await labCmd.ExecuteReaderAsync())
                 {
-                    var staff = availabilityReader["staff_assigned"].ToString();
-                    var day = availabilityReader["day"].ToString();
-                    var hour = Convert.ToInt32(availabilityReader["hour"]);
-
-                    if (!globalStaffAvailability.ContainsKey(staff))
+                    while (await labReader.ReadAsync())
                     {
-                        globalStaffAvailability[staff] = new();
-                        foreach (var d in new[] { "Mon", "Tue", "Wed", "Thu", "Fri" })
-                            globalStaffAvailability[staff][d] = new();
+                        var labId = labReader["lab_id"].ToString();
+                        var day = labReader["day"].ToString();
+                        var hour = Convert.ToInt32(labReader["hour"]);
+
+                        if (!labAvailability.ContainsKey(labId))
+                        {
+                            labAvailability[labId] = new Dictionary<string, HashSet<int>>();
+                            foreach (var d in new[] { "Mon", "Tue", "Wed", "Thu", "Fri" })
+                                labAvailability[labId][d] = new HashSet<int>();
+                        }
+                        labAvailability[labId][day].Add(hour);
                     }
-
-                    globalStaffAvailability[staff][day].Add(hour);
                 }
-                availabilityReader.Close();
 
-                var engine = new TimetableEngine();
-                var (timetable, conflicts) = engine.Generate(subjects, globalStaffAvailability, labAvailability);
+                // Load current staff availability
+                var availabilityQuery = "SELECT staff_code, day, hour FROM classtimetable";
+                using (var staffCmd = new NpgsqlCommand(availabilityQuery, conn))
+                using (var staffReader = await staffCmd.ExecuteReaderAsync())
+                {
+                    while (await staffReader.ReadAsync())
+                    {
+                        var staff = staffReader["staff_code"].ToString();
+                        var day = staffReader["day"].ToString();
+                        var hour = Convert.ToInt32(staffReader["hour"]);
+
+                        if (!globalStaffAvailability.ContainsKey(staff))
+                        {
+                            globalStaffAvailability[staff] = new();
+                            foreach (var d in new[] { "Mon", "Tue", "Wed", "Thu", "Fri" })
+                                globalStaffAvailability[staff][d] = new();
+                        }
+                        globalStaffAvailability[staff][day].Add(hour);
+                    }
+                }
+
+                // 1. Run GA to generate new timetable
+                var engine = new TimetableGA.TimetableEngine();
+                engine.Initialize(subjects, globalStaffAvailability, labAvailability);
+                var (timetable, conflicts, bestChromosome) = engine.GenerateGA();
+
+                // 2. COLLECT new INSERTS as rows to be inserted
+                var newClassRows = new List<(string staffName, string staffId, TimetableGA.TimetableEngine.Subject subj, string day, int hour)>();
 
                 foreach (var daySlot in timetable)
                 {
@@ -1099,107 +2533,310 @@ ORDER BY
                         if (value == "---") continue;
 
                         var hour = kv.Key;
-                        var parts = value.Split("(", StringSplitOptions.TrimEntries);
+                        var parts = value.Split('(', StringSplitOptions.TrimEntries);
                         string subjectCode = parts[0].Trim();
-                        string rawStaffId = parts.Length > 1 ? parts[1].Replace(")", "").Trim() : "---";
 
-                        var matchedSubject = subjects.FirstOrDefault(s => s.SubjectCode == subjectCode);
-                        string fullStaff = matchedSubject?.StaffAssigned ?? "---";
+                        var matchedSubject = subjects.FirstOrDefault(s => s.SubjectCode.Trim() == subjectCode);
+                        if (matchedSubject == null) continue;
 
+                        string fullStaff = matchedSubject.StaffAssigned ?? "---";
                         string staffName = "---", staffId = "---";
                         if (fullStaff.Contains("("))
                         {
-                            var nameIdParts = fullStaff.Split("(", StringSplitOptions.TrimEntries);
-                            staffName = nameIdParts[0].Trim();
-                            staffId = nameIdParts[1].Replace(")", "").Trim();
+                            var nameId = fullStaff.Split('(', StringSplitOptions.TrimEntries);
+                            staffName = nameId[0].Trim();
+                            staffId = nameId[1].Replace(")", "").Trim();
+                        }
+                        else
+                        {
+                            staffName = fullStaff.Trim();
+                            staffId = "---";
                         }
 
-                        var insertCmd = new NpgsqlCommand(@"
-                    INSERT INTO cross_class_timetable 
-                    (from_department, to_department, year, semester, section, day, hour, subject_code, staff_assigned)
-                    VALUES (@from_department, @to_department, @year, @semester, @section, @day, @hour, @subject_code, @staff_assigned);
-                ", conn);
+                        newClassRows.Add((staffName, staffId, matchedSubject, daySlot.Day, hour));
+                    }
+                }
 
-                        insertCmd.Parameters.AddWithValue("@from_department", toDepartment);
-                        insertCmd.Parameters.AddWithValue("@to_department", toDepartment);
-                        insertCmd.Parameters.AddWithValue("@year", year);
-                        insertCmd.Parameters.AddWithValue("@semester", semester);
-                        insertCmd.Parameters.AddWithValue("@section", section);
-                        insertCmd.Parameters.AddWithValue("@day", daySlot.Day);
-                        insertCmd.Parameters.AddWithValue("@hour", hour);
-                        insertCmd.Parameters.AddWithValue("@subject_code", subjectCode);
-                        insertCmd.Parameters.AddWithValue("@staff_assigned", rawStaffId);
-                        await insertCmd.ExecuteNonQueryAsync();
+                // 3. COLLECT new LAB INSERTS as rows to be inserted
+                var newLabRows = new List<(string labId, TimetableGA.TimetableEngine.Subject subj, string staffAssigned, string day, int hour)>();
+                foreach (var gene in bestChromosome.Genes)
+                {
+                    if (gene.IsLabBlock && !string.IsNullOrEmpty(gene.LabId))
+                    {
+                        var subject = subjects.FirstOrDefault(s => s.SubjectCode == gene.SubjectCode);
+                        if (subject == null) continue;
 
-                        var staffInsertCmd = new NpgsqlCommand(@"
-                    INSERT INTO staff_timetable
-                    (staff_name, department, year, semester, section, day, hour, subject_code, subject_name, staff_id)
-                    VALUES
-                    (@staff_name, @department, @year, @semester, @section, @day, @hour, @subject_code, @subject_name, @staff_id);
-                ", conn);
-
-                        staffInsertCmd.Parameters.AddWithValue("@staff_name", staffName);
-                        staffInsertCmd.Parameters.AddWithValue("@staff_id", staffId);
-                        staffInsertCmd.Parameters.AddWithValue("@department", toDepartment);
-                        staffInsertCmd.Parameters.AddWithValue("@year", year);
-                        staffInsertCmd.Parameters.AddWithValue("@semester", semester);
-                        staffInsertCmd.Parameters.AddWithValue("@section", section);
-                        staffInsertCmd.Parameters.AddWithValue("@day", daySlot.Day);
-                        staffInsertCmd.Parameters.AddWithValue("@hour", hour);
-                        staffInsertCmd.Parameters.AddWithValue("@subject_code", subjectCode);
-                        staffInsertCmd.Parameters.AddWithValue("@subject_name", matchedSubject?.SubjectName ?? "---");
-                        await staffInsertCmd.ExecuteNonQueryAsync();
-
-                        if (matchedSubject?.SubjectType?.Trim().ToLower() == "lab" && !string.IsNullOrEmpty(matchedSubject.LabId))
+                        for (int h = gene.StartHour; h < gene.StartHour + gene.Duration; h++)
                         {
-                            var labInsertCmd = new NpgsqlCommand(@"
-                        INSERT INTO lab_timetable
-                        (lab_id, subject_code, subject_name, staff_assigned, department, year, semester, section, day, hour)
-                        VALUES
-                        (@lab_id, @subject_code, @subject_name, @staff_assigned, @department, @year, @semester, @section, @day, @hour);
-                    ", conn);
-
-                            labInsertCmd.Parameters.AddWithValue("@lab_id", matchedSubject.LabId);
-                            labInsertCmd.Parameters.AddWithValue("@subject_code", matchedSubject.SubjectCode);
-                            labInsertCmd.Parameters.AddWithValue("@subject_name", matchedSubject.SubjectName);
-                            labInsertCmd.Parameters.AddWithValue("@staff_assigned", matchedSubject.StaffAssigned);
-                            labInsertCmd.Parameters.AddWithValue("@department", toDepartment);
-                            labInsertCmd.Parameters.AddWithValue("@year", year);
-                            labInsertCmd.Parameters.AddWithValue("@semester", semester);
-                            labInsertCmd.Parameters.AddWithValue("@section", section);
-                            labInsertCmd.Parameters.AddWithValue("@day", daySlot.Day);
-                            labInsertCmd.Parameters.AddWithValue("@hour", hour);
-                            await labInsertCmd.ExecuteNonQueryAsync();
-
-                            labTimetable.Add(new
-                            {
-                                lab_id = matchedSubject.LabId,
-                                subject_code = matchedSubject.SubjectCode,
-                                subject_name = matchedSubject.SubjectName,
-                                staff_assigned = matchedSubject.StaffAssigned,
-                                department = toDepartment,
-                                year,
-                                semester,
-                                section,
-                                day = daySlot.Day,
-                                hour
-                            });
+                            newLabRows.Add((gene.LabId, subject, gene.StaffAssigned, gene.Day, h));
                         }
                     }
                 }
 
+                // 4. CHECK FOR CONFLICTS WITH EXISTING DB
+
+                // -- Find all classtimetable and labtimetable rows that would conflict
+                var conflictingClassRows = new List<int>(); // Store IDs of conflicting class timetable rows
+                var conflictingLabRows = new List<int>();   // Store IDs of conflicting lab timetable rows
+
+                // Conflict check for class timetable
+                foreach (var row in newClassRows)
+                {
+                    var cmdTxt = @"
+                SELECT id FROM classtimetable
+                WHERE staff_code = @staff_code AND day = @day AND hour = @hour";
+                    using var conflictCmd = new NpgsqlCommand(cmdTxt, conn);
+                    conflictCmd.Parameters.AddWithValue("@staff_code", row.staffId);
+                    conflictCmd.Parameters.AddWithValue("@day", row.day);
+                    conflictCmd.Parameters.AddWithValue("@hour", row.hour);
+
+                    using var rdr = await conflictCmd.ExecuteReaderAsync();
+                    while (await rdr.ReadAsync())
+                    {
+                        conflictingClassRows.Add(rdr.GetInt32(0));
+                    }
+                    rdr.Close();
+                }
+
+                // Conflict check for lab timetable
+                foreach (var row in newLabRows)
+                {
+                    var cmdTxt = @"
+                SELECT id FROM labtimetable
+                WHERE lab_id = @lab_id AND day = @day AND hour = @hour";
+                    using var conflictCmd = new NpgsqlCommand(cmdTxt, conn);
+                    conflictCmd.Parameters.AddWithValue("@lab_id", row.labId);
+                    conflictCmd.Parameters.AddWithValue("@day", row.day);
+                    conflictCmd.Parameters.AddWithValue("@hour", row.hour);
+
+                    using var rdr = await conflictCmd.ExecuteReaderAsync();
+                    while (await rdr.ReadAsync())
+                    {
+                        conflictingLabRows.Add(rdr.GetInt32(0));
+                    }
+                    rdr.Close();
+                }
+
+                // Backup and delete conflicting class timetable rows
+                List<object> backupClassRows = new();
+                foreach (var rowId in conflictingClassRows.Distinct())
+                {
+                    var backupCmd = new NpgsqlCommand(
+                        @"INSERT INTO classtimetable_backup SELECT * FROM classtimetable WHERE id=@id", conn);
+                    backupCmd.Parameters.AddWithValue("@id", rowId);
+                    await backupCmd.ExecuteNonQueryAsync();
+
+                    var selCmd = new NpgsqlCommand(
+                        @"SELECT * FROM classtimetable WHERE id=@id", conn);
+                    selCmd.Parameters.AddWithValue("@id", rowId);
+
+                    using var rdr = await selCmd.ExecuteReaderAsync();
+                    if (await rdr.ReadAsync())
+                    {
+                        backupClassRows.Add(new
+                        {
+                            staff_name = rdr["staff_name"].ToString(),
+                            staff_code = rdr["staff_code"].ToString(),
+                            department_id = rdr["department_id"].ToString(),
+                            year = rdr["year"].ToString(),
+                            semester = rdr["semester"].ToString(),
+                            section = rdr["section"].ToString(),
+                            day = rdr["day"].ToString(),
+                            hour = Convert.ToInt32(rdr["hour"]),
+                            subject_code = rdr["subject_code"].ToString(),
+                            subject_name = rdr["subject_name"].ToString()
+                        });
+                    }
+                    rdr.Close();
+
+                    var delCmd = new NpgsqlCommand(
+                        @"DELETE FROM classtimetable WHERE id=@id", conn);
+                    delCmd.Parameters.AddWithValue("@id", rowId);
+                    await delCmd.ExecuteNonQueryAsync();
+                }
+
+                // Backup and delete conflicting lab timetable rows
+                List<object> backupLabRows = new();
+                foreach (var rowId in conflictingLabRows.Distinct())
+                {
+                    var backupCmd = new NpgsqlCommand(
+                        @"INSERT INTO labtimetable_backup SELECT * FROM labtimetable WHERE id=@id", conn);
+                    backupCmd.Parameters.AddWithValue("@id", rowId);
+                    await backupCmd.ExecuteNonQueryAsync();
+
+                    var selCmd = new NpgsqlCommand(@"SELECT * FROM labtimetable WHERE id=@id", conn);
+                    selCmd.Parameters.AddWithValue("@id", rowId);
+                    using var rdr = await selCmd.ExecuteReaderAsync();
+                    if (await rdr.ReadAsync())
+                    {
+                        backupLabRows.Add(new
+                        {
+                            lab_id = rdr["lab_id"].ToString(),
+                            subject_code = rdr["subject_code"].ToString(),
+                            subject_name = rdr["subject_name"].ToString(),
+                            staff_name = rdr["staff_name"].ToString(),
+                            department = rdr["department"].ToString(),
+                            year = rdr["year"].ToString(),
+                            semester = rdr["semester"].ToString(),
+                            section = rdr["section"].ToString(),
+                            day = rdr["day"].ToString(),
+                            hour = Convert.ToInt32(rdr["hour"])
+                        });
+                    }
+                    rdr.Close();
+
+                    var delCmd = new NpgsqlCommand(@"DELETE FROM labtimetable WHERE id=@id", conn);
+                    delCmd.Parameters.AddWithValue("@id", rowId);
+                    await delCmd.ExecuteNonQueryAsync();
+                }
+
+                // Now insert new rows
+                foreach (var (staffName, staffId, matchedSubject, day, hour) in newClassRows)
+                {
+                    var staffInsertCmd = new NpgsqlCommand(@"
+                INSERT INTO classtimetable
+                (staff_name, staff_code, department_id, year, semester, section, day, hour, subject_code, subject_name)
+                VALUES
+                (@staff_name, @staff_id, @department, @year, @semester, @section, @day, @hour, @subject_code, @subject_name);", conn);
+                    staffInsertCmd.Parameters.AddWithValue("@staff_name", staffName);
+                    staffInsertCmd.Parameters.AddWithValue("@staff_id", staffId);
+                    staffInsertCmd.Parameters.AddWithValue("@department", toDepartment);
+                    staffInsertCmd.Parameters.AddWithValue("@year", year);
+                    staffInsertCmd.Parameters.AddWithValue("@semester", semester);
+                    staffInsertCmd.Parameters.AddWithValue("@section", section);
+                    staffInsertCmd.Parameters.AddWithValue("@day", day);
+                    staffInsertCmd.Parameters.AddWithValue("@hour", hour);
+                    staffInsertCmd.Parameters.AddWithValue("@subject_code", matchedSubject.SubjectCode);
+                    staffInsertCmd.Parameters.AddWithValue("@subject_name", matchedSubject.SubjectName);
+                    await staffInsertCmd.ExecuteNonQueryAsync();
+                }
+
+                foreach (var (labId, subject, staffAssigned, day, hour) in newLabRows)
+                {
+                    var labInsertCmd = new NpgsqlCommand(@"
+                INSERT INTO labtimetable
+                (lab_id, subject_code, subject_name, staff_name, department, year, semester, section, day, hour)
+                VALUES
+                (@lab_id, @subject_code, @subject_name, @staff_name, @department, @year, @semester, @section, @day, @hour);", conn);
+
+                    labInsertCmd.Parameters.AddWithValue("@lab_id", labId);
+                    labInsertCmd.Parameters.AddWithValue("@subject_code", subject.SubjectCode);
+                    labInsertCmd.Parameters.AddWithValue("@subject_name", subject.SubjectName);
+                    labInsertCmd.Parameters.AddWithValue("@staff_name", staffAssigned ?? "---");
+                    labInsertCmd.Parameters.AddWithValue("@department", toDepartment);
+                    labInsertCmd.Parameters.AddWithValue("@year", year);
+                    labInsertCmd.Parameters.AddWithValue("@semester", semester);
+                    labInsertCmd.Parameters.AddWithValue("@section", section);
+                    labInsertCmd.Parameters.AddWithValue("@day", day);
+                    labInsertCmd.Parameters.AddWithValue("@hour", hour);
+                    await labInsertCmd.ExecuteNonQueryAsync();
+
+                    labTimetable.Add(new
+                    {
+                        lab_id = labId,
+                        subject_code = subject.SubjectCode,
+                        subject_name = subject.SubjectName,
+                        staff_assigned = staffAssigned,
+                        department = toDepartment,
+                        year = year,
+                        semester = semester,
+                        section = section,
+                        day = day,
+                        hour = hour
+                    });
+                }
+
+                // Try to reschedule backup class rows (if any) by running GA, now including the current timetable constraints!
+                var unscheduledClassRows = new List<object>();
+                if (backupClassRows.Count > 0)
+                {
+                    foreach (var entry in backupClassRows)
+                    {
+                        // Build a 'subject' for GA
+                        var backupSubject = new TimetableGA.TimetableEngine.Subject
+                        {
+                            SubjectCode = (string)entry.GetType().GetProperty("subject_code").GetValue(entry),
+                            SubjectName = (string)entry.GetType().GetProperty("subject_name").GetValue(entry),
+                            Credit = 1,
+                            StaffAssigned = (string)entry.GetType().GetProperty("staff_code").GetValue(entry),
+                            SubjectType = "Theory"
+                        };
+
+                        var singleSubList = new List<TimetableGA.TimetableEngine.Subject> { backupSubject };
+                        var singleStaffAvail = await LoadAvailabilityForStaff(backupSubject.StaffAssigned, conn);
+
+                        var ga = new TimetableGA.TimetableEngine();
+                        ga.Initialize(singleSubList, singleStaffAvail, new Dictionary<string, Dictionary<string, HashSet<int>>>());
+                        var (tt, conflicts2, chrom) = ga.GenerateGA();
+
+                        if (conflicts2.Count == 0)
+                        {
+                            foreach (var slot in tt)
+                            {
+                                foreach (var kv in slot.HourlySlots)
+                                {
+                                    if (kv.Value == "---") continue;
+                                    var cmd2 = new NpgsqlCommand(@"
+                                INSERT INTO classtimetable
+                                (staff_name, staff_code, department_id, year, semester, section, day, hour, subject_code, subject_name)
+                                VALUES
+                                (@staff_name, @staff_code, @department_id, @year, @semester, @section, @day, @hour, @subject_code, @subject_name);", conn);
+                                    cmd2.Parameters.AddWithValue("@staff_name", entry.GetType().GetProperty("staff_name").GetValue(entry));
+                                    cmd2.Parameters.AddWithValue("@staff_code", entry.GetType().GetProperty("staff_code").GetValue(entry));
+                                    cmd2.Parameters.AddWithValue("@department_id", entry.GetType().GetProperty("department_id").GetValue(entry));
+                                    cmd2.Parameters.AddWithValue("@year", entry.GetType().GetProperty("year").GetValue(entry));
+                                    cmd2.Parameters.AddWithValue("@semester", entry.GetType().GetProperty("semester").GetValue(entry));
+                                    cmd2.Parameters.AddWithValue("@section", entry.GetType().GetProperty("section").GetValue(entry));
+                                    cmd2.Parameters.AddWithValue("@day", slot.Day);
+                                    cmd2.Parameters.AddWithValue("@hour", kv.Key);
+                                    cmd2.Parameters.AddWithValue("@subject_code", backupSubject.SubjectCode);
+                                    cmd2.Parameters.AddWithValue("@subject_name", backupSubject.SubjectName);
+                                    await cmd2.ExecuteNonQueryAsync();
+                                }
+                            }
+                        }
+                        else
+                        {
+                            unscheduledClassRows.Add(entry);
+                        }
+                    }
+                }
+
+                // Optionally, reschedule lab rows if required (pattern would match above)
+
+                // Optionally, update status in pendingtimetabledata (this is a GET-only thing, you can keep or remove)
+                var updateQuery = @"
+UPDATE pendingtimetabledata
+SET status = 'generated'
+WHERE LOWER(department) = LOWER(@toDepartment)
+  AND LOWER(year) = LOWER(@year)
+  AND LOWER(sem) = LOWER(@semester)
+  AND LOWER(section) = LOWER(@section)
+  AND TRIM(staffname) IS NOT NULL AND TRIM(staffname) <> ''";
+
+                using var updateCmd = new NpgsqlCommand(updateQuery, conn);
+                updateCmd.Parameters.AddWithValue("@toDepartment", toDepartment.Trim());
+                updateCmd.Parameters.AddWithValue("@year", year.Trim());
+                updateCmd.Parameters.AddWithValue("@semester", semester.Trim());
+                updateCmd.Parameters.AddWithValue("@section", section.Trim());
+
+                await updateCmd.ExecuteNonQueryAsync();
+
                 return Ok(new
                 {
-                    message = conflicts.Count == 0
-                        ? "✅ Timetable generated and stored successfully."
-                        : "⚠ Timetable generated with some conflicts. Stored valid entries.",
+                    message = conflicts.Count == 0 && unscheduledClassRows.Count == 0
+                        ? "✅ Hybrid Timetable generated and stored successfully; all conflicts resolved."
+                        : "⚠ Hybrid Timetable generated with some unsolved/conflicting cases. Some original class/lab slots could not be rescheduled.",
                     timetable,
                     labTimetable,
-                    usedLabIds = subjects.Select(s => s.LabId).Distinct().ToList(),
+                    unresolvedClassConflicts = unscheduledClassRows,
+                    // unresolvedLabConflicts = unscheduledLabRows, // implement if needed
+                    usedLabIds = subjects.Where(s => !string.IsNullOrEmpty(s.LabId)).Select(s => s.LabId).Distinct().ToList(),
+                    receivedPayload = new { toDepartment, year, semester, section },
                     conflicts = conflicts.Select(c => new
                     {
-                        subject = c.Subject.SubjectCode,
-                        staff = c.Subject.StaffAssigned,
+                        subject = c.Subject?.SubjectCode,
+                        staff = c.Subject?.StaffAssigned,
                         reason = c.Reason
                     })
                 });
@@ -1212,6 +2849,30 @@ ORDER BY
                     error = ex.Message
                 });
             }
+        }
+
+        // Helper function to load staff availability from DB
+        private async Task<Dictionary<string, Dictionary<string, HashSet<int>>>> LoadAvailabilityForStaff(string staffCode, NpgsqlConnection conn)
+        {
+            var result = new Dictionary<string, Dictionary<string, HashSet<int>>>
+            {
+                [staffCode] = new Dictionary<string, HashSet<int>>()
+            };
+            foreach (var d in new[] { "Mon", "Tue", "Wed", "Thu", "Fri" })
+                result[staffCode][d] = new();
+
+            var cmd = new NpgsqlCommand(
+                @"SELECT day, hour FROM classtimetable WHERE staff_code=@staff", conn);
+            cmd.Parameters.AddWithValue("@staff", staffCode);
+            using var rdr = await cmd.ExecuteReaderAsync();
+            while (await rdr.ReadAsync())
+            {
+                string day = rdr["day"].ToString();
+                int hour = Convert.ToInt32(rdr["hour"]);
+                result[staffCode][day].Add(hour);
+            }
+            rdr.Close();
+            return result;
         }
 
 

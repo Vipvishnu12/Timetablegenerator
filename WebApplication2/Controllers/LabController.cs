@@ -1,7 +1,8 @@
 ﻿using Microsoft.AspNetCore.Mvc;
-using Npgsql;
 using Microsoft.Extensions.Configuration;
+using Npgsql;
 using System.Collections.Generic;
+using System.Runtime.Intrinsics.X86;
 
 namespace YourNamespace.Controllers
 {
@@ -33,10 +34,11 @@ namespace YourNamespace.Controllers
 
                 using var conn = new NpgsqlConnection(connectionString);
                 await conn.OpenAsync();
+            
 
                 var query = @"
-            INSERT INTO labs (lab_id, lab_name, department, systems)
-            VALUES (@labId, @labName, @department, @systems)
+            INSERT INTO labdata (lab_id, lab_name, departmentid, lab_capacity,block)
+            VALUES (@labId, @labName, @department, @systems,@block)
         ";
 
                 using var cmd = new NpgsqlCommand(query, conn);
@@ -44,7 +46,7 @@ namespace YourNamespace.Controllers
                 cmd.Parameters.AddWithValue("@labName", lab.LabName);
                 cmd.Parameters.AddWithValue("@department", lab.Department);
                 cmd.Parameters.AddWithValue("@systems", lab.Systems);
-
+                cmd.Parameters.AddWithValue("@block", lab.Block);
                 await cmd.ExecuteNonQueryAsync();
 
                 return Ok(new { message = "✅ Lab created successfully." });
@@ -75,10 +77,10 @@ namespace YourNamespace.Controllers
                 await conn.OpenAsync();
 
                 var query = @"
-    UPDATE labs
+    UPDATE labdata
     SET lab_name = @labName,
-        department = @department,
-        systems = @systems
+        departmentid = @department,
+        lab_capacity = @systems
     WHERE lab_id = @labId
 ";
 
@@ -102,12 +104,12 @@ namespace YourNamespace.Controllers
         }
 
 
-  
+
 
 
 
         [HttpGet("all")]
-        public async Task<IActionResult> GetAllLabs()
+        public async Task<IActionResult> GetAllLabs([FromQuery] string departmentId)
         {
             try
             {
@@ -116,8 +118,11 @@ namespace YourNamespace.Controllers
                 using var conn = new NpgsqlConnection(connectionString);
                 await conn.OpenAsync();
 
-                var query = "SELECT lab_id, lab_name, department, systems FROM labs";
+                // Modify the query to filter by departmentId
+                var query = "SELECT lab_id, lab_name, departmentid, lab_capacity FROM labdata WHERE departmentid = @DepartmentId";
+
                 using var cmd = new NpgsqlCommand(query, conn);
+                cmd.Parameters.AddWithValue("@DepartmentId", departmentId);  // Pass departmentId as a parameter
                 using var reader = await cmd.ExecuteReaderAsync();
 
                 var labs = new List<object>();
@@ -128,8 +133,8 @@ namespace YourNamespace.Controllers
                     {
                         LabId = reader["lab_id"].ToString(),
                         LabName = reader["lab_name"].ToString(),
-                        Department = reader["department"].ToString(),
-                        Systems = Convert.ToInt32(reader["systems"])
+                        Department = reader["departmentid"].ToString(),
+                        Systems = Convert.ToInt32(reader["lab_capacity"])
                     });
                 }
 
@@ -140,8 +145,6 @@ namespace YourNamespace.Controllers
                 return StatusCode(500, new { message = "❌ Failed to retrieve labs.", error = ex.Message });
             }
         }
-
-
 
 
         [HttpGet("getTimetableByLabId")]
@@ -158,8 +161,8 @@ namespace YourNamespace.Controllers
                 await conn.OpenAsync();
 
                 var query = @"
-            SELECT subject_code, subject_name, staff_assigned, department, year, semester, section, day, hour
-            FROM lab_timetable
+            SELECT subject_code, subject_name, staff_name, department, year, semester, section, day, hour
+            FROM labtimetable
             WHERE lab_id = @labId
             ORDER BY day, hour";
 
@@ -176,7 +179,7 @@ namespace YourNamespace.Controllers
                     {
                         SubjectId = reader["subject_name"].ToString(),
                         SubjectCode = reader["subject_code"].ToString(),
-                        Staff = reader["staff_assigned"].ToString(),
+                        Staff = reader["staff_name"].ToString(),
                         Department = reader["department"].ToString(),
                         Year = reader["year"].ToString(),
                         Semester = reader["semester"].ToString(),
@@ -198,7 +201,42 @@ namespace YourNamespace.Controllers
                 return StatusCode(500, new { message = "❌ Failed to load timetable.", error = ex.Message });
             }
         }
+       [HttpGet("all1")]
+     public async Task<IActionResult> GetAllLabs()
+        {
+            try
+            {
+                var connectionString = _configuration.GetConnectionString("DefaultConnection");
 
+                using var conn = new NpgsqlConnection(connectionString);
+                await conn.OpenAsync();
+
+                var query = "SELECT lab_id, lab_name, departmentid, lab_capacity FROM labdata";
+                using var cmd = new NpgsqlCommand(query, conn);
+                using var reader = await cmd.ExecuteReaderAsync();
+
+                var labs = new List<object>();
+
+                while (await reader.ReadAsync())
+                {
+                    labs.Add(new
+                    {
+                        LabId = reader["lab_id"].ToString(),
+                        LabName = reader["lab_name"].ToString(),
+                        Department = reader["departmentid"].ToString(),
+                        Systems = Convert.ToInt32(reader["lab_capacity"])
+                    });
+                }
+
+                return Ok(labs);
+            }
+            catch (Exception ex)
+            {
+                return StatusCode(500, new { message = "❌ Failed to retrieve labs.", error = ex.Message });
+            }
+        }
+
+   
         public class LabTimetableResponseDto
         {
             public string LabId { get; set; }
@@ -224,6 +262,7 @@ namespace YourNamespace.Controllers
             public string LabId { get; set; }
             public string LabName { get; set; }
             public string Department { get; set; }
+            public string Block { get; set; }
             public int Systems { get; set; }
         }
         // ✅ DTOs

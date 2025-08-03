@@ -1,8 +1,9 @@
 ﻿using Microsoft.AspNetCore.Mvc;
-using Npgsql;
 using Microsoft.Extensions.Configuration;
+using Npgsql;
 using System;
 using System.Collections.Generic;
+using System.Data;
 using System.Threading.Tasks;
 
 namespace Timetablegenerator.Controllers
@@ -196,14 +197,15 @@ namespace Timetablegenerator.Controllers
 
                 foreach (var req in requests)
                 {
-                    // Update cross_department_assignments
+  
+      // Update cross_department_assignments
                     var updateCrossQuery = @"
-                UPDATE cross_department_assignments
-                SET assigned_staff = @staff
-                WHERE subject_code = @subCode 
-                  AND subject_name = @subName 
+                UPDATE pendingtimetabledata
+                SET staffname = @staff
+                WHERE subject_id = @subCode 
+                  AND subject_shrt = @subName 
                   AND year = @year 
-                  AND semester = @semester 
+                  AND sem = @semester 
                   AND section = @section
             ";
 
@@ -218,47 +220,6 @@ namespace Timetablegenerator.Controllers
                         await cmd1.ExecuteNonQueryAsync();
                     }
 
-                    // Update subject_assignments
-                    var updateSecondQuery = @"
-                UPDATE subject_assignments
-                SET staff_assigned = @staff
-                WHERE sub_code = @subCode 
-                  AND subject_name = @subName 
-                  AND year = @year 
-                  AND semester = @semester 
-                  AND section = @section
-            ";
-
-                    using (var cmd2 = new NpgsqlCommand(updateSecondQuery, conn))
-                    {
-                        cmd2.Parameters.AddWithValue("@staff", req.assignedStaff ?? "");
-                        cmd2.Parameters.AddWithValue("@subCode", req.subCode);
-                        cmd2.Parameters.AddWithValue("@subName", req.subjectName);
-                        cmd2.Parameters.AddWithValue("@year", req.year);
-                        cmd2.Parameters.AddWithValue("@semester", req.semester);
-                        cmd2.Parameters.AddWithValue("@section", req.section);
-                        await cmd2.ExecuteNonQueryAsync();
-                    }
-
-                    // ❌ Delete from cross_department_assignments
-            //        var deleteQuery = @"
-            //    DELETE FROM cross_department_assignments
-            //    WHERE subject_code = @subCode 
-            //      AND subject_name = @subName 
-            //      AND year = @year 
-            //      AND semester = @semester 
-            //      AND section = @section
-            //";
-
-            //        using (var deleteCmd = new NpgsqlCommand(deleteQuery, conn))
-            //        {
-            //            deleteCmd.Parameters.AddWithValue("@subCode", req.subCode);
-            //            deleteCmd.Parameters.AddWithValue("@subName", req.subjectName);
-            //            deleteCmd.Parameters.AddWithValue("@year", req.year);
-            //            deleteCmd.Parameters.AddWithValue("@semester", req.semester);
-            //            deleteCmd.Parameters.AddWithValue("@section", req.section);
-            //            await deleteCmd.ExecuteNonQueryAsync();
-            //        }
                 }
 
                 return Ok(new { message = "Staff assignments updated and removed from cross_department_assignments." });

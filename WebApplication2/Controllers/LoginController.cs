@@ -28,9 +28,9 @@ namespace YourNamespace.Controllers
                 conn.Open();
 
                 var query = @"
-        SELECT department_name,role 
-        FROM admin 
-        WHERE department_id = @username AND password = @password
+        SELECT username,role 
+        FROM login 
+        WHERE username = @username AND password = @password
     ";
 
                 using var cmd = new NpgsqlCommand(query, conn);
@@ -61,14 +61,13 @@ namespace YourNamespace.Controllers
                 return StatusCode(500, new { message = "Server error", error = ex.Message });
             }
         }
-            // ✅ Insert into admin table instead of department
-            [HttpPost("add-department")]
+        [HttpPost("add-department")]
         public IActionResult AddDepartment([FromBody] DepartmentDto dept)
         {
             if (dept == null || string.IsNullOrWhiteSpace(dept.DepartmentId) ||
                 string.IsNullOrWhiteSpace(dept.DepartmentName) ||
-                string.IsNullOrWhiteSpace(dept.Block) ||
-                string.IsNullOrWhiteSpace(dept.Password))
+                string.IsNullOrWhiteSpace(dept.Password) ||
+                string.IsNullOrWhiteSpace(dept.role))
             {
                 return BadRequest(new { message = "All fields are required." });
             }
@@ -80,24 +79,40 @@ namespace YourNamespace.Controllers
                 using var conn = new NpgsqlConnection(connectionString);
                 conn.Open();
 
-                var query = @"
-                    INSERT INTO admin (department_id, department_name, block, password)
-                    VALUES (@DepartmentId, @DepartmentName, @Block, @Password)
-                ";
+                using var transaction = conn.BeginTransaction();
 
-                using var cmd = new NpgsqlCommand(query, conn);
-                cmd.Parameters.AddWithValue("@DepartmentId", dept.DepartmentId.ToUpper());
-                cmd.Parameters.AddWithValue("@DepartmentName", dept.DepartmentName.ToUpper());
-                cmd.Parameters.AddWithValue("@Block", dept.Block.ToUpper());
-                cmd.Parameters.AddWithValue("@Password", dept.Password);
+                var adminQuery = @"
+            INSERT INTO admin (department_id, department_name)
+            VALUES (@DepartmentId, @DepartmentName)
+        ";
 
-                cmd.ExecuteNonQuery();
+                using (var cmd = new NpgsqlCommand(adminQuery, conn, transaction))
+                {
+                    cmd.Parameters.AddWithValue("@DepartmentId", dept.DepartmentId.ToUpper());
+                    cmd.Parameters.AddWithValue("@DepartmentName", dept.DepartmentName.ToUpper());
+                    cmd.ExecuteNonQuery();
+                }
+
+                var loginQuery = @"
+            INSERT INTO login (username, password, role)
+            VALUES (@DepartmentId, @Password, @Role)
+        ";
+
+                using (var cmd1 = new NpgsqlCommand(loginQuery, conn, transaction))
+                {
+                    cmd1.Parameters.AddWithValue("@DepartmentId", dept.DepartmentId.ToUpper());
+                    cmd1.Parameters.AddWithValue("@Password", dept.Password);
+                    cmd1.Parameters.AddWithValue("@Role", dept.role);
+                    cmd1.ExecuteNonQuery();
+                }
+
+                transaction.Commit();
 
                 return Ok(new { message = "Admin department added successfully." });
             }
             catch (PostgresException ex) when (ex.SqlState == "23505")
             {
-                return Conflict(new { message = "Department already exists." });
+                return Conflict(new { message = "Department or username already exists." });
             }
             catch (Exception ex)
             {
@@ -105,6 +120,14 @@ namespace YourNamespace.Controllers
             }
         }
 
+        public class DepartmentDto
+        {
+            public string DepartmentId { get; set; }
+            public string DepartmentName { get; set; }
+        //    public string Block { get; set; }
+            public string Password { get; set; }
+            public string role { get; set; }
+        }
         // ✅ Get all department IDs from admin table
         [HttpGet("departments")]
         public IActionResult GetAllDepartments()
@@ -142,11 +165,5 @@ namespace YourNamespace.Controllers
         public string Password { get; set; }
     }
 
-    public class DepartmentDto
-    {
-        public string DepartmentId { get; set; }
-        public string DepartmentName { get; set; }
-        public string Block { get; set; }
-        public string Password { get; set; }
-    }
+  
 }

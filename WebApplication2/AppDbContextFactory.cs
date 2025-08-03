@@ -18,7 +18,8 @@ namespace Timetablegenerator
             var connectionString = config.GetConnectionString("DefaultConnection");
 
             // ✅ This requires EF Core SQL Server package
-            optionsBuilder.UseSqlServer(connectionString);
+            optionsBuilder.UseNpgsql(connectionString);
+
 
             return new AppDbContext(optionsBuilder.Options);
         }

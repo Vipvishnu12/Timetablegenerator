@@ -25,12 +25,14 @@ namespace Timetablegenerator.Controllers
 
             try
             {
+          
+
                 using var conn = _db.GetConnection();
                 conn.Open();
 
                 string query = @"
-                    SELECT subject_id, sub_code, subject_name, subject_type, credit
-                    FROM subject_data2
+                    SELECT subject_shortform, subject_code, subject_name, subject_type, credit
+                    FROM subject_data
                     WHERE year = @year AND sem = @sem AND department_id = @department_id;
                 ";
 
@@ -45,8 +47,8 @@ namespace Timetablegenerator.Controllers
                 {
                     result.Add(new SubjectResultDto
                     {
-                        SubjectId = reader["subject_id"].ToString(),
-                        SubCode = reader["sub_code"].ToString(),
+                        SubjectId = reader["subject_shortform"].ToString(),
+                        SubCode = reader["subject_code"].ToString(),
                         SubjectName = reader["subject_name"].ToString(),
                         SubjectType = reader["subject_type"].ToString(),
                         Credit = reader["credit"] != DBNull.Value ? Convert.ToInt32(reader["credit"]) : 0
@@ -78,9 +80,9 @@ namespace Timetablegenerator.Controllers
                 conn.Open();
 
                 string query = @"
-                    SELECT staff_id, name
-                    FROM staff_data2
-                    WHERE department_id = @department_id;
+                    SELECT staffid, staffname
+                    FROM staff_data
+                    WHERE departmentid = @department_id;
                 ";
 
                 using var cmd = new NpgsqlCommand(query, conn);
@@ -92,8 +94,8 @@ namespace Timetablegenerator.Controllers
                 {
                     result.Add(new StaffResultDto
                     {
-                        StaffId = reader["staff_id"].ToString(),
-                        StaffName = reader["name"].ToString()
+                        StaffId = reader["staffid"].ToString(),
+                        StaffName = reader["staffname"].ToString()
                     });
                 }
 

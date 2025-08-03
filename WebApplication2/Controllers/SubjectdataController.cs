@@ -28,11 +28,14 @@ namespace Timetablegenerator.Controllers
 
             try
             {
+
+        
+
                 string query = @"
-                    INSERT INTO subject_data2
-                    (subject_id, sub_code, subject_name, year, sem, department, department_id, subject_type, credit)
+                    INSERT INTO subject_data
+                    (subject_shortform, subject_code, subject_name, year, sem, department_id, subject_type, credit)
                     VALUES 
-                    (@subject_id, @sub_code, @subject_name, @year, @sem, @department, @department_id, @subject_type, @credit);
+                    (@subject_id, @sub_code, @subject_name, @year, @sem, @department_id, @subject_type, @credit);
                 ";
 
                 using var cmd = new NpgsqlCommand(query, conn);
@@ -41,7 +44,6 @@ namespace Timetablegenerator.Controllers
                 cmd.Parameters.AddWithValue("@subject_name", dto.Subject_Name ?? "");
                 cmd.Parameters.AddWithValue("@year", dto.Year ?? "");
                 cmd.Parameters.AddWithValue("@sem", dto.Sem ?? "");
-                cmd.Parameters.AddWithValue("@department", dto.Department ?? "");
                 cmd.Parameters.AddWithValue("@department_id", dto.Department_Id ?? "");
                 cmd.Parameters.AddWithValue("@subject_type", dto.Subject_Type ?? "");
                 cmd.Parameters.AddWithValue("@credit", dto.Credit);
@@ -69,8 +71,8 @@ namespace Timetablegenerator.Controllers
             try
             {
                 string query = @"
-                    SELECT subject_id, sub_code, subject_name, year, sem, department, department_id, subject_type, credit
-                    FROM subject_data2
+                    SELECT subject_shortform, subject_code, subject_name, year, sem, department_id, subject_type, credit
+                    FROM subject_data
                     WHERE year = @year AND sem = @sem AND department_id = @department_id;
                 ";
 
@@ -86,13 +88,13 @@ namespace Timetablegenerator.Controllers
                 {
                     subjects.Add(new SubjectDataDto
                     {
-                        Subject_Id = reader["subject_id"].ToString(),
-                        Sub_Code = reader["sub_code"].ToString(),
+                        Subject_Id = reader["subject_shortform"].ToString(),
+                        Sub_Code = reader["subject_code"].ToString(),
                         Subject_Name = reader["subject_name"].ToString(),
                         Year = reader["year"].ToString(),
                         Sem = reader["sem"].ToString(),
-                        Department = reader["department"].ToString(),
-                        Department_Id = reader["department_id"].ToString(),
+                       // Department = reader["department"].ToString(),
+                        Department = reader["department_id"].ToString(),
                         Subject_Type = reader["subject_type"].ToString(),
                         Credit = reader["credit"] != DBNull.Value ? Convert.ToInt32(reader["credit"]) : 0
                     });
@@ -126,11 +128,11 @@ namespace Timetablegenerator.Controllers
             try
             {
                 string query = @"
-                    UPDATE subject_data2 SET
+                    UPDATE subject_data SET
                         subject_name = @name,
                         subject_type = @type,
                         credit = @credit
-                    WHERE sub_code = @code AND year = @year AND sem = @sem AND department_id = @department_id;
+                    WHERE subject_code = @code AND year = @year AND sem = @sem AND department_id = @department_id;
                 ";
 
                 using var cmd = new NpgsqlCommand(query, conn);
